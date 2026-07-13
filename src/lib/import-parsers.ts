@@ -2,6 +2,7 @@
 // Also provides a naive category suggestion by keyword.
 
 import * as XLSX from "xlsx";
+export { suggestCategoryName } from "./finance-domain";
 
 export type ParsedLine = {
   raw: string;
@@ -180,82 +181,6 @@ export function parseTXT(text: string): ParsedLine[] {
     });
   }
   return result;
-}
-
-// -------- Category suggestion --------
-
-const RULES: Array<{ keywords: string[]; name: string }> = [
-  {
-    name: "Alimentação",
-    keywords: [
-      "ifood",
-      "uber eats",
-      "restaurante",
-      "mercado",
-      "supermercado",
-      "padaria",
-      "lanchonete",
-      "delivery",
-      "rappi",
-    ],
-  },
-  {
-    name: "Transporte",
-    keywords: ["uber", "99app", "99 ", "combustivel", "combustível", "posto", "estacionamento", "gasolina"],
-  },
-  {
-    name: "Assinaturas",
-    keywords: ["netflix", "spotify", "assinatura", "prime", "apple", "youtube", "hbo", "disney"],
-  },
-  {
-    name: "Saúde",
-    keywords: ["farmacia", "farmácia", "drogaria", "medico", "médico", "academia", "laboratorio", "laboratório", "hospital"],
-  },
-  {
-    name: "Compras",
-    keywords: ["amazon", "shopping", "loja", "magazine", "magalu", "mercadolivre", "shopee"],
-  },
-  {
-    name: "Educação",
-    keywords: ["escola", "curso", "faculdade", "livro", "livraria", "udemy", "alura"],
-  },
-  {
-    name: "Viagens",
-    keywords: ["hotel", "passagem", "airbnb", "latam", "gol linhas", "azul viagens", "booking", "decolar"],
-  },
-  {
-    name: "Receita",
-    keywords: ["salario", "salário", "pix recebido", "transferencia recebida", "transferência recebida", "credito recebido", "rendimento"],
-  },
-  {
-    name: "Encargos financeiros",
-    keywords: [
-      "juros",
-      "iof",
-      "multa",
-      "atraso",
-      "encargos",
-      "encargo",
-      "tarifa",
-      "conversão limite",
-      "conversao limite",
-      "valor pendente do mês anterior",
-      "valor pendente do mes anterior",
-      "saldo anterior",
-    ],
-  },
-  {
-    name: "Impostos",
-    keywords: ["imposto", "darf", "iptu", "ipva", "receita federal"],
-  },
-];
-
-export function suggestCategoryName(description: string): string | null {
-  const s = description.toLowerCase();
-  for (const rule of RULES) {
-    if (rule.keywords.some((k) => s.includes(k))) return rule.name;
-  }
-  return null;
 }
 
 // -------- File type detection --------

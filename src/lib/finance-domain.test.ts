@@ -9,6 +9,9 @@ import {
   deriveInvoiceStatus,
   isGenericDescription,
   normalizeTransactionDescription,
+  readImportedLineSelection,
+  suggestCategoryName,
+  validateImportedLineForApproval,
 } from "./finance-domain.ts";
 
 test("normalizes accents, punctuation and whitespace for stable matching", () => {
@@ -150,17 +153,14 @@ test("used credit limit excludes amounts already paid and never becomes negative
 });
 
 test("computes closing and due dates across month and year boundaries", () => {
-  assert.deepEqual(
-    computeInvoicePeriod("2026-12-29", { closing_day: 28, due_day: 5 }),
-    {
-      referenceMonth: "2027-01-01",
-      openingDate: "2026-12-29",
-      closingDate: "2027-01-28",
-      dueDate: "2027-02-05",
-      label: "janeiro de 2027",
-      belongsToCurrent: false,
-    },
-  );
+  assert.deepEqual(computeInvoicePeriod("2026-12-29", { closing_day: 28, due_day: 5 }), {
+    referenceMonth: "2027-01-01",
+    openingDate: "2026-12-29",
+    closingDate: "2027-01-28",
+    dueDate: "2027-02-05",
+    label: "janeiro de 2027",
+    belongsToCurrent: false,
+  });
   assert.equal(
     computeInvoicePeriod("2026-02-10", { closing_day: 31, due_day: 31 }).closingDate,
     "2026-02-28",
@@ -170,5 +170,57 @@ test("computes closing and due dates across month and year boundaries", () => {
 test("splits installments in cents and puts the rounding residual in the last one", () => {
   const plan = computeInstallmentAmounts(100, 3);
   assert.deepEqual(plan, [33.33, 33.33, 33.34]);
-  assert.equal(plan.reduce((total, amount) => total + amount, 0), 100);
+  assert.equal(
+    plan.reduce((total, amount) => total + amount, 0),
+    100,
+  );
+});
+
+test("reads current and legacy import selections in one place", () => {
+  assert.deepEqual(
+    readImportedLineSelection({
+      selected_type: "credit_card_purchase",
+      destination_account_id: "account-2",
+    }),
+    { selectedType: "expense", destinationAccountId: "account-2" },
+  );
+  assert.equal(
+    readImportedLineSelection({
+      selected_type: "expense",
+      user_selected_type: "transfer",
+    }).selectedType,
+    "transfer",
+  );
+});
+
+test("category suggestions share normalized financial classification terms", () => {
+  assert.equal(suggestCategoryName("JUROS de atraso Nubank"), "Encargos financeiros");
+  assert.equal(suggestCategoryName("Farmácia São Paulo"), "Saúde");
+  assert.equal(suggestCategoryName("Pagamento recebido"), null);
+});
+
+test("approval validation uses the central classification and keeps review auditable", () => {
+  const paymentWithoutAccount = validateImportedLineForApproval({
+    date: "2026-07-10",
+    amount: -500,
+    description: "Pagamento recebido",
+    context: "credit_card",
+    selectedType: null,
+    financialAccountId: null,
+    creditCardId: "card-1",
+    destinationAccountId: null,
+  });
+  assert.match(paymentWithoutAccount ?? "", /selecione a conta/i);
+
+  const ambiguousCredit = validateImportedLineForApproval({
+    date: "2026-07-10",
+    amount: -10,
+    description: "Ajuste Nubank",
+    context: "credit_card",
+    selectedType: null,
+    financialAccountId: "account-1",
+    creditCardId: "card-1",
+    destinationAccountId: null,
+  });
+  assert.match(ambiguousCredit ?? "", /escolha o tipo/i);
 });

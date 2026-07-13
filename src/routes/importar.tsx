@@ -40,6 +40,13 @@ import {
 } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
+import {
+  classifyImportedTransaction,
+  isInvoiceCreditMovement,
+  readImportedLineSelection,
+  validateImportedLineForApproval,
+  type SuggestedTransactionType,
+} from "@/lib/finance-domain";
 
 export const Route = createFileRoute("/importar")({
   head: () => ({
@@ -60,7 +67,7 @@ export const Route = createFileRoute("/importar")({
 // User-facing type. The internal transactions.type may still be
 // "credit_card_purchase" when file_context === "credit_card" and the
 // user picks "expense" — that mapping happens at approval time.
-type LineType = "income" | "expense" | "transfer";
+type LineType = SuggestedTransactionType;
 
 const TYPE_LABELS: Record<LineType, string> = {
   income: "Receita",
@@ -68,152 +75,28 @@ const TYPE_LABELS: Record<LineType, string> = {
   transfer: "Transferência",
 };
 
-const TRANSFER_KEYWORDS = [
-  "transferência",
-  "transferencia",
-  "pix enviado",
-  "pix recebido",
-  "ted",
-  "doc",
-  "resgate",
-  "aplicação",
-  "aplicacao",
-  "movimentação entre contas",
-  "movimentacao entre contas",
-];
-
-const INVOICE_PAYMENT_KEYWORDS = [
-  "pagamento recebido",
-  "pagamento de fatura",
-  "fatura paga",
-  "crédito em fatura",
-  "credito em fatura",
-  "quitação",
-  "quitacao",
-  "débito automático fatura",
-  "debito automatico fatura",
-  "estorno",
-  "reembolso",
-  "cashback",
-];
-
-const CHARGE_KEYWORDS = [
-  "juros",
-  "iof",
-  "multa",
-  "atraso",
-  "encargos",
-  "encargo",
-  "tarifa",
-  "conversão limite",
-  "conversao limite",
-  "valor pendente do mês anterior",
-  "valor pendente do mes anterior",
-  "saldo anterior",
-];
-
-export function isInvoicePayment(
-  description: string | null,
-  context: FileContext,
-): boolean {
-  if (context !== "credit_card") return false;
-  const d = (description ?? "").toLowerCase();
-  return INVOICE_PAYMENT_KEYWORDS.some((k) => d.includes(k));
-}
-
-export function isInvoiceCharge(
-  description: string | null,
-  context: FileContext,
-): boolean {
-  if (context !== "credit_card") return false;
-  const d = (description ?? "").toLowerCase();
-  return CHARGE_KEYWORDS.some((k) => d.includes(k));
-}
-
-function suggestType(
-  description: string | null,
-  amount: number,
-  context: FileContext,
-): LineType | null {
-  const d = (description ?? "").toLowerCase();
-  if (isInvoicePayment(description, context)) return "transfer";
-  if (context === "credit_card") {
-    if (isInvoiceCharge(description, context)) return "expense";
-    if (TRANSFER_KEYWORDS.some((k) => d.includes(k))) return "transfer";
-    if (amount >= 0) return "expense";
-    return null;
-  }
-  if (TRANSFER_KEYWORDS.some((k) => d.includes(k))) return "transfer";
-  return amount >= 0 ? "income" : "expense";
-}
-
 function readLineMeta(line: ImportedTransactionLine) {
   const meta = (line.metadata ?? {}) as Record<string, unknown>;
-  // Prefer the new key. Fall back to legacy `selected_type` for older rows,
-  // remapping "credit_card_purchase" → "expense" for display purposes.
-  const rawUser =
-    typeof meta.user_selected_type === "string"
-      ? (meta.user_selected_type as string)
-      : typeof meta.selected_type === "string"
-        ? (meta.selected_type as string)
-        : null;
-  const normalized =
-    rawUser === "credit_card_purchase" ? "expense" : rawUser;
-  const selectedType: LineType | null =
-    normalized === "income" || normalized === "expense" || normalized === "transfer"
-      ? normalized
-      : null;
-  const destinationAccountId =
-    typeof meta.destination_account_id === "string" && meta.destination_account_id
-      ? (meta.destination_account_id as string)
-      : null;
+  const { selectedType, destinationAccountId } = readImportedLineSelection(meta);
   return { meta, selectedType, destinationAccountId };
-}
-
-function effectiveType(
-  line: ImportedTransactionLine,
-  file: ImportedFile,
-): LineType | null {
-  const { selectedType } = readLineMeta(line);
-  if (selectedType) return selectedType;
-  const amount = Number(line.extracted_amount ?? 0);
-  return suggestType(line.extracted_description, amount, file.file_context);
 }
 
 function validateLineForApprove(
   line: ImportedTransactionLine,
   file: ImportedFile,
 ): string | null {
-  if (!line.extracted_date || line.extracted_amount == null) {
-    return "Preencha data e valor antes de aprovar.";
-  }
-  const type = effectiveType(line, file);
-  if (!type) return "Escolha o tipo de lançamento antes de aprovar.";
-  const { destinationAccountId } = readLineMeta(line);
-  const accountId =
-    line.selected_financial_account_id ?? file.financial_account_id ?? null;
-  const cardId = line.selected_credit_card_id ?? file.credit_card_id ?? null;
-
-  if (type === "transfer") {
-    const invoicePayment = isInvoicePayment(line.extracted_description, file.file_context);
-    if (invoicePayment) {
-      if (!accountId) {
-        return "Para registrar o pagamento da fatura, selecione a conta de onde saiu o dinheiro.";
-      }
-    } else {
-      if (!accountId || !destinationAccountId) {
-        return "Para transferências, selecione a conta de origem e a conta de destino.";
-      }
-      if (accountId === destinationAccountId) {
-        return "A conta de origem e destino precisam ser diferentes.";
-      }
-    }
-  } else if (type === "expense" && file.file_context === "credit_card") {
-    if (!cardId) return "Compras no cartão precisam estar vinculadas a um cartão.";
-  } else {
-    if (!accountId) return `${TYPE_LABELS[type]} precisa de uma conta financeira.`;
-  }
-  return null;
+  const { selectedType, destinationAccountId } = readLineMeta(line);
+  return validateImportedLineForApproval({
+    date: line.extracted_date,
+    amount: line.extracted_amount,
+    description: line.extracted_description,
+    context: file.file_context,
+    selectedType,
+    financialAccountId:
+      line.selected_financial_account_id ?? file.financial_account_id ?? null,
+    creditCardId: line.selected_credit_card_id ?? file.credit_card_id ?? null,
+    destinationAccountId,
+  });
 }
 
 
@@ -878,7 +761,12 @@ function LineRow({
   const { selectedType: persistedType, destinationAccountId: persistedDest, meta } =
     readLineMeta(line);
   const amountNum = Number(line.extracted_amount ?? 0);
-  const suggested = suggestType(line.extracted_description, amountNum, file.file_context);
+  const classification = classifyImportedTransaction({
+    description: line.extracted_description,
+    amount: amountNum,
+    context: file.file_context,
+  });
+  const suggested = classification.suggestedType;
   const currentType: LineType | "" = persistedType ?? suggested ?? "";
   const isSuggestion = !persistedType && suggested !== null;
 
@@ -966,9 +854,12 @@ function LineRow({
 
   const isCredit = file.file_context === "credit_card";
   const isPending = line.review_status === "pending";
-  const invoicePayment = isInvoicePayment(line.extracted_description, file.file_context);
-  const invoiceCharge = isInvoiceCharge(line.extracted_description, file.file_context);
-  const needsReview = isCredit && amountNum < 0 && isPending && !persistedType && !invoicePayment;
+  const invoicePayment = isInvoiceCreditMovement(classification.kind);
+  const invoiceCharge =
+    classification.kind === "financial_charge" ||
+    classification.kind === "previous_balance";
+  const needsReview =
+    isPending && !persistedType && classification.requiresReview && !invoicePayment;
 
   return (
     <div className={cn("p-4", selected && "bg-secondary/40")}>

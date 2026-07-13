@@ -18,6 +18,11 @@ export type ImportedTransactionClassification = {
   requiresReview: boolean;
 };
 
+export type ImportedLineSelection = {
+  selectedType: SuggestedTransactionType | null;
+  destinationAccountId: string | null;
+};
+
 const BANK_TRANSFER_TERMS = [
   "transferencia",
   "pix enviado",
@@ -37,11 +42,7 @@ const CREDIT_CARD_PAYMENT_TERMS = [
   "debito automatico fatura",
 ];
 
-const INVOICE_CREDIT_TERMS = [
-  "credito em fatura",
-  "credito na fatura",
-  "ajuste a credito",
-];
+const INVOICE_CREDIT_TERMS = ["credito em fatura", "credito na fatura", "ajuste a credito"];
 
 const REFUND_TERMS = ["estorno", "reembolso", "compra cancelada"];
 const CASHBACK_TERMS = ["cashback", "dinheiro de volta"];
@@ -95,9 +96,7 @@ export function normalizeTransactionDescription(description: string | null | und
 export function isGenericDescription(description: string | null | undefined): boolean {
   const normalized = normalizeTransactionDescription(description);
   if (GENERIC_DESCRIPTIONS.has(normalized)) return true;
-  return /^(compra|pagamento|transacao|lancamento|pix|ted|doc)\s+\d+$/.test(
-    normalized,
-  );
+  return /^(compra|pagamento|transacao|lancamento|pix|ted|doc)\s+\d+$/.test(normalized);
 }
 
 export function classifyImportedTransaction(input: {
@@ -153,6 +152,158 @@ export function classifyImportedTransaction(input: {
   };
 }
 
+export function isInvoiceCreditMovement(kind: ImportedTransactionKind): boolean {
+  return (
+    kind === "credit_card_payment" ||
+    kind === "invoice_credit" ||
+    kind === "refund" ||
+    kind === "cashback"
+  );
+}
+
+export function readImportedLineSelection(
+  metadata: Record<string, unknown> | null | undefined,
+): ImportedLineSelection {
+  const meta = metadata ?? {};
+  const rawType =
+    typeof meta.user_selected_type === "string"
+      ? meta.user_selected_type
+      : typeof meta.selected_type === "string"
+        ? meta.selected_type
+        : null;
+  const normalizedType = rawType === "credit_card_purchase" ? "expense" : rawType;
+  const selectedType =
+    normalizedType === "income" || normalizedType === "expense" || normalizedType === "transfer"
+      ? normalizedType
+      : null;
+  const destinationAccountId =
+    typeof meta.destination_account_id === "string" && meta.destination_account_id
+      ? meta.destination_account_id
+      : null;
+  return { selectedType, destinationAccountId };
+}
+
+export function validateImportedLineForApproval(input: {
+  date: string | null;
+  amount: number | null;
+  description: string | null;
+  context: ImportContext;
+  selectedType: SuggestedTransactionType | null;
+  financialAccountId: string | null;
+  creditCardId: string | null;
+  destinationAccountId: string | null;
+}): string | null {
+  if (!input.date || input.amount == null || !Number.isFinite(input.amount)) {
+    return "Preencha data e valor antes de aprovar.";
+  }
+  const classification = classifyImportedTransaction({
+    description: input.description,
+    amount: input.amount,
+    context: input.context,
+  });
+  const type = input.selectedType ?? classification.suggestedType;
+  if (!type) return "Escolha o tipo de lançamento antes de aprovar.";
+
+  if (type === "transfer") {
+    if (isInvoiceCreditMovement(classification.kind)) {
+      return input.financialAccountId
+        ? null
+        : "Para registrar o pagamento da fatura, selecione a conta de onde saiu o dinheiro.";
+    }
+    if (!input.financialAccountId || !input.destinationAccountId) {
+      return "Para transferências, selecione a conta de origem e a conta de destino.";
+    }
+    if (input.financialAccountId === input.destinationAccountId) {
+      return "A conta de origem e destino precisam ser diferentes.";
+    }
+    return null;
+  }
+
+  if (type === "expense" && input.context === "credit_card") {
+    return input.creditCardId ? null : "Compras no cartão precisam estar vinculadas a um cartão.";
+  }
+  if (!input.financialAccountId) {
+    return `${type === "income" ? "Receita" : "Despesa"} precisa de uma conta financeira.`;
+  }
+  return null;
+}
+
+const CATEGORY_RULES: ReadonlyArray<{ keywords: readonly string[]; name: string }> = [
+  {
+    name: "Alimentação",
+    keywords: [
+      "ifood",
+      "uber eats",
+      "restaurante",
+      "mercado",
+      "supermercado",
+      "padaria",
+      "lanchonete",
+      "delivery",
+      "rappi",
+    ],
+  },
+  {
+    name: "Transporte",
+    keywords: ["uber", "99app", "99 ", "combustivel", "posto", "estacionamento", "gasolina"],
+  },
+  {
+    name: "Assinaturas",
+    keywords: ["netflix", "spotify", "assinatura", "prime", "apple", "youtube", "hbo", "disney"],
+  },
+  {
+    name: "Saúde",
+    keywords: ["farmacia", "drogaria", "medico", "academia", "laboratorio", "hospital"],
+  },
+  {
+    name: "Compras",
+    keywords: ["amazon", "shopping", "loja", "magazine", "magalu", "mercadolivre", "shopee"],
+  },
+  {
+    name: "Educação",
+    keywords: ["escola", "curso", "faculdade", "livro", "livraria", "udemy", "alura"],
+  },
+  {
+    name: "Viagens",
+    keywords: [
+      "hotel",
+      "passagem",
+      "airbnb",
+      "latam",
+      "gol linhas",
+      "azul viagens",
+      "booking",
+      "decolar",
+    ],
+  },
+  {
+    name: "Receita",
+    keywords: [
+      "salario",
+      "pix recebido",
+      "transferencia recebida",
+      "credito recebido",
+      "rendimento",
+    ],
+  },
+  {
+    name: "Encargos financeiros",
+    keywords: [...FINANCIAL_CHARGE_TERMS, ...PREVIOUS_BALANCE_TERMS, "atraso"],
+  },
+  {
+    name: "Impostos",
+    keywords: ["imposto", "darf", "iptu", "ipva", "receita federal"],
+  },
+];
+
+export function suggestCategoryName(description: string): string | null {
+  const normalized = normalizeTransactionDescription(description);
+  for (const rule of CATEGORY_RULES) {
+    if (includesAny(normalized, rule.keywords)) return rule.name;
+  }
+  return null;
+}
+
 function roundCurrency(value: number): number {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
@@ -196,9 +347,7 @@ export function deriveInvoiceAmounts(
   const creditBalance = roundCurrency(Math.max(credits - charges, 0));
   const paidAmount = roundCurrency(payments);
   const pendingAmount = roundCurrency(Math.max(totalAmount - paidAmount, 0));
-  const excessCredit = roundCurrency(
-    Math.max(paidAmount + creditBalance - totalAmount, 0),
-  );
+  const excessCredit = roundCurrency(Math.max(paidAmount + creditBalance - totalAmount, 0));
 
   return { charges, credits, totalAmount, paidAmount, pendingAmount, excessCredit };
 }

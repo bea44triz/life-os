@@ -14,6 +14,11 @@ import {
   suggestCategoryName,
   type ParsedLine,
 } from "./import-parsers";
+import {
+  classifyImportedTransaction,
+  isInvoiceCreditMovement,
+  readImportedLineSelection,
+} from "./finance-domain";
 
 export type FileContext = "bank_account" | "credit_card";
 export type FileType = "txt" | "csv" | "pdf" | "ofx" | "xlsx";
@@ -553,38 +558,23 @@ export async function approveLine(
   };
   const origin = originMap[file.file_type as FileType] ?? "import_csv";
 
-  const meta = (line.metadata ?? {}) as Record<string, unknown>;
-  const rawUserType =
-    typeof meta.user_selected_type === "string"
-      ? (meta.user_selected_type as string)
-      : typeof meta.selected_type === "string"
-        ? (meta.selected_type as string)
-        : null;
-  // Normalize any legacy "credit_card_purchase" persisted by earlier versions
-  // to the user-facing "expense" — the internal mapping is applied below.
-  const userType =
-    rawUserType === "credit_card_purchase" ? "expense" : rawUserType;
-  const destinationAccountId =
-    typeof meta.destination_account_id === "string" && meta.destination_account_id
-      ? meta.destination_account_id
-      : null;
+  const { selectedType: userType, destinationAccountId } =
+    readImportedLineSelection(line.metadata);
+  const classification = classifyImportedTransaction({
+    description: line.extracted_description,
+    amount,
+    context: file.file_context,
+  });
 
   const userTypes = ["income", "expense", "transfer"] as const;
   type UserType = (typeof userTypes)[number];
   type TxType = UserType | "credit_card_purchase";
 
-  let facing: UserType;
-  if (userType && (userTypes as readonly string[]).includes(userType)) {
-    facing = userType as UserType;
-  } else if (file.file_context === "credit_card") {
-    if (amount < 0) {
-      throw new Error(
-        "Escolha o tipo de lançamento antes de aprovar. Este lançamento parece ser um pagamento ou crédito na fatura.",
-      );
-    }
-    facing = "expense";
-  } else {
-    facing = amount >= 0 ? "income" : "expense";
+  const facing = userType ?? classification.suggestedType;
+  if (!facing || !(userTypes as readonly string[]).includes(facing)) {
+    throw new Error(
+      "Escolha o tipo de lançamento antes de aprovar. Este lançamento parece ser um pagamento ou crédito na fatura.",
+    );
   }
 
   // Internal type: expense in a credit-card file becomes credit_card_purchase.
@@ -632,24 +622,9 @@ export async function approveLine(
     invoiceId = await resolveInvoice(card as CreditCard);
     finalAmount = -Math.abs(amount);
   } else if (type === "transfer") {
-    const desc = (line.extracted_description ?? "").toLowerCase();
-    const invoicePaymentKeywords = [
-      "pagamento recebido",
-      "pagamento de fatura",
-      "fatura paga",
-      "crédito em fatura",
-      "credito em fatura",
-      "quitação",
-      "quitacao",
-      "débito automático fatura",
-      "debito automatico fatura",
-      "estorno",
-      "reembolso",
-      "cashback",
-    ];
     const isInvoicePay =
       file.file_context === "credit_card" &&
-      invoicePaymentKeywords.some((k) => desc.includes(k));
+      isInvoiceCreditMovement(classification.kind);
 
     accountId = line.selected_financial_account_id ?? file.financial_account_id;
     if (!accountId) {
