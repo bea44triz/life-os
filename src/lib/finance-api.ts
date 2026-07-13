@@ -103,6 +103,7 @@ export type TxInput = {
   installment_number?: number | null;
   installment_total?: number | null;
   notes?: string | null;
+  metadata?: Record<string, unknown> | null;
 };
 
 export async function listTransactions(userId: string): Promise<Transaction[]> {

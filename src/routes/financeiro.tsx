@@ -129,6 +129,10 @@ function Financeiro() {
     setDialogOpen(true);
   }
   function openEdit(t: Transaction) {
+    if (t.type === "credit_card_purchase") {
+      toast.message("Compras no cartão são editadas pelo fluxo próprio de Cartões.");
+      return;
+    }
     setEditing(t);
     setDialogOpen(true);
   }
@@ -143,7 +147,7 @@ function Financeiro() {
     }
   }
 
-  const useLive = dashboard.hasAnyData || hasReal;
+  const useLive = dashboard.accountsCount > 0 || dashboard.cardsCount > 0 || hasReal;
   const balance = useLive ? dashboard.balance : mockTx.reduce((a, b) => a + 0, 0);
 
   return (

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   classifyPersistedInvoiceTransaction,
   classifyImportedTransaction,
+  classifyInvoiceAnalysisBucket,
   computeInstallmentAmounts,
   computeInvoicePeriod,
   computeUsedCreditLimit,
@@ -11,6 +12,7 @@ import {
   deriveInvoiceAmounts,
   deriveInvoiceStatus,
   isGenericDescription,
+  MANUAL_TRANSACTION_TYPES,
   normalizeTransactionDescription,
   readImportedLineSelection,
   suggestCategoryName,
@@ -396,4 +398,37 @@ test("derives a real Nubank invoice with purchases, charges, previous balance an
     computeUsedCreditLimit([{ totalAmount: amounts.totalAmount, paidAmount: amounts.paidAmount }]),
     447,
   );
+});
+
+test("keeps card purchase out of the generic manual transaction types", () => {
+  assert.deepEqual(MANUAL_TRANSACTION_TYPES, ["income", "expense", "transfer"]);
+  assert.equal(MANUAL_TRANSACTION_TYPES.includes("credit_card_purchase" as never), false);
+});
+
+test("separates purchases, financial charges and previous balance in card analysis", () => {
+  assert.equal(
+    classifyInvoiceAnalysisBucket({ type: "credit_card_purchase", metadata: null }),
+    "purchase",
+  );
+  assert.equal(
+    classifyInvoiceAnalysisBucket({
+      type: "credit_card_purchase",
+      metadata: { movement_type: "financial_charge" },
+    }),
+    "financial_charge",
+  );
+  assert.equal(
+    classifyInvoiceAnalysisBucket({
+      type: "credit_card_purchase",
+      metadata: { movement_type: "previous_balance" },
+    }),
+    "previous_balance",
+  );
+  for (const movement_type of ["credit_card_payment", "invoice_credit", "refund", "cashback"]) {
+    assert.equal(
+      classifyInvoiceAnalysisBucket({ type: "transfer", metadata: { movement_type } }),
+      null,
+      movement_type,
+    );
+  }
 });

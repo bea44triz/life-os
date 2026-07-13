@@ -25,6 +25,7 @@ import {
 } from "@/lib/credit-cards";
 import type { CreditCard } from "@/lib/finance-api";
 import {
+  classifyInvoiceAnalysisBucket,
   computeUsedCreditLimit,
   deriveInvoiceBalance,
   type InvoiceBalance,
@@ -95,7 +96,13 @@ function Cartoes() {
           })),
       );
     }
-    return { currentTotal, nextTotal, totalLimit, usedNow };
+    return {
+      currentTotal,
+      nextTotal,
+      totalLimit,
+      usedNow,
+      availableLimit: Math.max(totalLimit - usedNow, 0),
+    };
   }, [cards, invoices, today]);
 
   function openNewCard() {
@@ -148,7 +155,7 @@ function Cartoes() {
 
       <PageBody>
         {cards.length > 0 && (
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
             <StatCard label="Fatura atual" value={brl(summary.currentTotal)} tone="sage" />
             <StatCard
               label="Próxima fatura"
@@ -168,6 +175,11 @@ function Cartoes() {
                   : "—"
               }
               hint={summary.totalLimit ? brl(summary.usedNow) : "cadastre um limite"}
+            />
+            <StatCard
+              label="Limite disponível"
+              value={summary.totalLimit ? brl(summary.availableLimit) : "—"}
+              tone="gold"
             />
           </div>
         )}
@@ -353,6 +365,9 @@ function CardTile({
             <div className="text-[11px] opacity-70">Fatura atual · {current.label}</div>
             <div className="font-serif text-2xl">{brl(currentBalance.pendingAmount)}</div>
             <div className="text-[11px] opacity-70">
+              total {brl(currentBalance.totalAmount)} · pago {brl(currentBalance.paidAmount)}
+            </div>
+            <div className="text-[11px] opacity-70">
               vence {new Date(current.dueDate).toLocaleDateString("pt-BR")}
             </div>
             {currentBalance.excessCredit > 0 && (
@@ -375,8 +390,8 @@ function CardTile({
               <div className="h-full bg-white/80" style={{ width: `${pct}%` }} />
             </div>
             <div className="mt-1.5 flex items-center justify-between text-[11px] opacity-80">
-              <span>Limite {brl(limit)}</span>
-              <span>{pct.toFixed(0)}% comprometido</span>
+              <span>Usado {brl(used)} · disponível {brl(Math.max(limit - used, 0))}</span>
+              <span>{pct.toFixed(0)}% do limite</span>
             </div>
           </div>
         )}
@@ -441,6 +456,7 @@ function CardAnalysis({
     description: string;
     category_id: string | null;
     is_installment: boolean | null;
+    metadata: Record<string, unknown> | null;
   }>;
   categories: Array<{ id: string; name: string }>;
 }) {
@@ -463,9 +479,20 @@ function CardAnalysis({
   const byCategory = new Map<string, number>();
   let biggest = { desc: "", amount: 0 };
   let installmentsFuture = 0;
+  let financialCharges = 0;
+  let previousBalance = 0;
 
   for (const t of invoiceTxs) {
     const abs = Math.abs(Number(t.amount));
+    const bucket = classifyInvoiceAnalysisBucket({ type: t.type, metadata: t.metadata });
+    if (bucket === "financial_charge") {
+      financialCharges += abs;
+      continue;
+    }
+    if (bucket === "previous_balance") {
+      previousBalance += abs;
+      continue;
+    }
     const catId = t.category_id ?? "sem";
     byCategory.set(catId, (byCategory.get(catId) ?? 0) + abs);
     if (abs > biggest.amount) biggest = { desc: t.description, amount: abs };
@@ -535,6 +562,23 @@ function CardAnalysis({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {(financialCharges > 0 || previousBalance > 0) && (
+        <div className="grid grid-cols-2 gap-3 text-sm">
+          <div className="rounded-xl bg-clay-soft p-3">
+            <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+              Encargos
+            </div>
+            <div className="font-serif text-lg">{brl(financialCharges)}</div>
+          </div>
+          <div className="rounded-xl bg-gold-soft p-3">
+            <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
+              Saldo anterior
+            </div>
+            <div className="font-serif text-lg">{brl(previousBalance)}</div>
+          </div>
         </div>
       )}
 

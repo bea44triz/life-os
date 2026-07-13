@@ -12,6 +12,8 @@ export type ImportedTransactionKind =
 
 export type SuggestedTransactionType = "income" | "expense" | "transfer";
 
+export const MANUAL_TRANSACTION_TYPES = ["income", "expense", "transfer"] as const;
+
 export type ImportedTransactionClassification = {
   kind: ImportedTransactionKind;
   suggestedType: SuggestedTransactionType | null;
@@ -451,6 +453,18 @@ export function classifyPersistedInvoiceTransaction(input: {
   }
   if (input.metadata?.invoice_payment === true) return "credit_card_payment";
   return null;
+}
+
+export type InvoiceAnalysisBucket = "purchase" | "financial_charge" | "previous_balance";
+
+export function classifyInvoiceAnalysisBucket(input: {
+  type: string;
+  metadata?: Record<string, unknown> | null;
+}): InvoiceAnalysisBucket | null {
+  if (input.type !== "credit_card_purchase") return null;
+  if (input.metadata?.movement_type === "financial_charge") return "financial_charge";
+  if (input.metadata?.movement_type === "previous_balance") return "previous_balance";
+  return "purchase";
 }
 
 export function deriveInvoiceAmounts(

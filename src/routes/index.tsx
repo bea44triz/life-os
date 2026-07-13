@@ -1,4 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useMemo } from "react";
 import { ArrowUpRight, Plus, TrendingUp, TrendingDown, CreditCard, Smile } from "lucide-react";
 import { PageBody, PageHeader, Section, StatCard, brl } from "@/components/ui-bits";
 import { InsightCard } from "@/components/InsightCard";
@@ -15,6 +16,14 @@ import {
 } from "@/lib/mockData";
 import { useDashboardData } from "@/lib/use-dashboard-data";
 import { useAuth } from "@/lib/auth-context";
+import {
+  useCategories,
+  useCreditCards,
+  useInvoices,
+  useTransactions,
+} from "@/lib/finance-hooks";
+import { bestPurchaseDay, computeInvoicePeriod } from "@/lib/credit-cards";
+import { computeUsedCreditLimit, deriveInvoiceBalance } from "@/lib/finance-domain";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -34,17 +43,94 @@ const dayLabels = ["S", "T", "Q", "Q", "S", "S", "D"];
 
 function Dashboard() {
   const featured = insights[0];
-  const nubank = creditCards[0];
-  const nubankFatura = transactions
-    .filter((t) => t.cardId === nubank.id)
+  const mockCard = creditCards[0];
+  const mockCardInvoice = transactions
+    .filter((t) => t.cardId === mockCard.id)
     .reduce((a, b) => a + Math.abs(b.amount), 0);
   const { user: authUser } = useAuth();
   const live = useDashboardData();
+  const { data: liveCards = [] } = useCreditCards();
+  const { data: liveInvoices = [] } = useInvoices();
+  const { data: liveTransactions = [] } = useTransactions();
+  const { data: liveCategories = [] } = useCategories();
   const displayName =
     (authUser?.user_metadata?.full_name as string | undefined)?.split(" ")[0] ??
     authUser?.email?.split("@")[0] ??
     user.name;
-  const useLive = live.hasAnyData;
+  const useLive =
+    live.accountsCount > 0 || live.cardsCount > 0 || liveTransactions.length > 0;
+  const cardPreview = useMemo(() => {
+    const card = liveCards[0];
+    if (!card) {
+      return {
+        name: mockCard.name,
+        currentAmount: mockCardInvoice,
+        nextAmount: monthSummary.nextBillTotal,
+        usedPercent: (mockCard.used / mockCard.limit) * 100,
+        closingLabel: `dia ${String(mockCard.closingDay).padStart(2, "0")}`,
+        dueLabel: `dia ${String(mockCard.dueDay).padStart(2, "0")}`,
+        bestDay: (mockCard.closingDay % 31) + 1,
+        live: false,
+      };
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const currentPeriod = computeInvoicePeriod(today, card);
+    const nextDate = new Date();
+    nextDate.setMonth(nextDate.getMonth() + 1);
+    const nextPeriod = computeInvoicePeriod(nextDate.toISOString().slice(0, 10), card);
+    const currentInvoice = liveInvoices.find(
+      (invoice) =>
+        invoice.credit_card_id === card.id &&
+        invoice.reference_month.slice(0, 10) === currentPeriod.referenceMonth,
+    );
+    const nextInvoice = liveInvoices.find(
+      (invoice) =>
+        invoice.credit_card_id === card.id &&
+        invoice.reference_month.slice(0, 10) === nextPeriod.referenceMonth,
+    );
+    const currentBalance = deriveInvoiceBalance({
+      totalAmount: currentInvoice?.total_amount ?? 0,
+      paidAmount: currentInvoice?.paid_amount ?? 0,
+    });
+    const nextBalance = deriveInvoiceBalance({
+      totalAmount: nextInvoice?.total_amount ?? 0,
+      paidAmount: nextInvoice?.paid_amount ?? 0,
+    });
+    const used = computeUsedCreditLimit(
+      liveInvoices
+        .filter((invoice) => invoice.credit_card_id === card.id)
+        .map((invoice) => ({
+          totalAmount: invoice.total_amount,
+          paidAmount: invoice.paid_amount,
+        })),
+    );
+    const limit = card.credit_limit ?? 0;
+    return {
+      name: card.name,
+      currentAmount: currentBalance.pendingAmount,
+      nextAmount: nextBalance.pendingAmount,
+      usedPercent: limit > 0 ? Math.min((used / limit) * 100, 100) : 0,
+      closingLabel: new Date(`${currentPeriod.closingDate}T12:00:00`).toLocaleDateString(
+        "pt-BR",
+      ),
+      dueLabel: new Date(`${currentPeriod.dueDate}T12:00:00`).toLocaleDateString("pt-BR"),
+      bestDay: bestPurchaseDay(card.closing_day ?? 1),
+      live: true,
+    };
+  }, [liveCards, liveInvoices, mockCard, mockCardInvoice]);
+
+  const recentTransactions = liveTransactions.length
+    ? liveTransactions.slice(0, 5).map((transaction) => ({
+        id: transaction.id,
+        description: transaction.description,
+        amount: Number(transaction.amount),
+        type: transaction.type,
+        date: transaction.transaction_date,
+        category:
+          liveCategories.find((category) => category.id === transaction.category_id)?.name ??
+          "Sem categoria",
+      }))
+    : transactions.slice(0, 5);
 
   return (
     <>
@@ -128,10 +214,12 @@ function Dashboard() {
                 <div className="text-xs uppercase tracking-wider text-muted-foreground">
                   Cartão em aberto
                 </div>
-                <h3 className="mt-2 font-serif text-2xl">Nubank · fecha em 4 dias</h3>
+                <h3 className="mt-2 font-serif text-2xl">
+                  {cardPreview.name} · fecha {cardPreview.closingLabel}
+                </h3>
               </div>
               <Link
-                to="/financeiro"
+                to="/cartoes"
                 className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
               >
                 Ver financeiro <ArrowUpRight className="h-3 w-3" />
@@ -141,16 +229,16 @@ function Dashboard() {
             <div className="mt-5 grid grid-cols-3 gap-4">
               <div>
                 <div className="text-xs text-muted-foreground">Fatura atual</div>
-                <div className="mt-1 font-serif text-2xl">{brl(nubankFatura)}</div>
+                <div className="mt-1 font-serif text-2xl">{brl(cardPreview.currentAmount)}</div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Próxima fatura</div>
-                <div className="mt-1 font-serif text-2xl">{brl(monthSummary.nextBillTotal)}</div>
+                <div className="mt-1 font-serif text-2xl">{brl(cardPreview.nextAmount)}</div>
               </div>
               <div>
                 <div className="text-xs text-muted-foreground">Limite usado</div>
                 <div className="mt-1 font-serif text-2xl">
-                  {Math.round((nubank.used / nubank.limit) * 100)}%
+                  {Math.round(cardPreview.usedPercent)}%
                 </div>
               </div>
             </div>
@@ -158,12 +246,16 @@ function Dashboard() {
             <div className="mt-5 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
               <div
                 className="h-full rounded-full bg-ink"
-                style={{ width: `${(nubank.used / nubank.limit) * 100}%` }}
+                style={{ width: `${cardPreview.usedPercent}%` }}
               />
             </div>
 
             <p className="mt-4 text-sm text-muted-foreground">
-              Vence dia 12. Melhor dia de compra: <strong className="text-foreground">06</strong>.
+              Vence {cardPreview.dueLabel}. Melhor dia de compra:{" "}
+              <strong className="text-foreground">
+                {String(cardPreview.bestDay).padStart(2, "0")}
+              </strong>
+              {!cardPreview.live && " · exemplo"}.
             </p>
           </div>
 
@@ -302,8 +394,8 @@ function Dashboard() {
               </Link>
             </header>
             <ul className="mt-4 divide-y divide-border/60">
-              {transactions.slice(0, 5).map((t) => {
-                const isIncome = t.amount > 0;
+              {recentTransactions.map((t) => {
+                const isIncome = t.type === "income";
                 return (
                   <li key={t.id} className="flex items-center gap-3 py-3">
                     <span

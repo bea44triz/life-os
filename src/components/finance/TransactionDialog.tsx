@@ -22,21 +22,22 @@ import { Button } from "@/components/ui/button";
 import {
   useAccounts,
   useCategories,
-  useCreateAccount,
   useCreateCategory,
   useCreateTransaction,
-  useCreditCards,
   useProjects,
   useSubcategories,
   useUpdateTransaction,
 } from "@/lib/finance-hooks";
-import type { Transaction, TxInput, TxType } from "@/lib/finance-api";
+import type { Transaction, TxInput } from "@/lib/finance-api";
+import {
+  MANUAL_TRANSACTION_TYPES,
+  type SuggestedTransactionType,
+} from "@/lib/finance-domain";
 
-const TYPE_LABELS: Record<TxType, string> = {
+const TYPE_LABELS: Record<SuggestedTransactionType, string> = {
   income: "Receita",
   expense: "Despesa",
   transfer: "Transferência",
-  credit_card_purchase: "Compra no cartão",
 };
 
 const PAYMENT_METHODS = [
@@ -62,7 +63,7 @@ export function TransactionDialog({
   onOpenChange: (v: boolean) => void;
   editing?: Transaction | null;
 }) {
-  const [type, setType] = useState<TxType>("expense");
+  const [type, setType] = useState<SuggestedTransactionType>("expense");
   const [description, setDescription] = useState("");
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
@@ -70,7 +71,7 @@ export function TransactionDialog({
   const [categoryId, setCategoryId] = useState<string>("");
   const [subcategoryId, setSubcategoryId] = useState<string>("");
   const [accountId, setAccountId] = useState<string>("");
-  const [cardId, setCardId] = useState<string>("");
+  const [destinationAccountId, setDestinationAccountId] = useState<string>("");
   const [projectId, setProjectId] = useState<string>("");
   const [paymentMethod, setPaymentMethod] = useState<string>("");
   const [isRecurring, setIsRecurring] = useState(false);
@@ -84,7 +85,6 @@ export function TransactionDialog({
   const { data: categories = [] } = useCategories();
   const { data: subcategories = [] } = useSubcategories();
   const { data: accounts = [] } = useAccounts();
-  const { data: cards = [] } = useCreditCards();
   const { data: projects = [] } = useProjects();
 
   const createTx = useCreateTransaction();
@@ -94,7 +94,7 @@ export function TransactionDialog({
   useEffect(() => {
     if (!open) return;
     if (editing) {
-      setType(editing.type);
+      setType(editing.type === "credit_card_purchase" ? "expense" : editing.type);
       setDescription(editing.description);
       setAmount(String(Math.abs(Number(editing.amount))));
       setDate(editing.transaction_date?.slice(0, 10) ?? todayISO());
@@ -102,7 +102,11 @@ export function TransactionDialog({
       setCategoryId(editing.category_id ?? "");
       setSubcategoryId(editing.subcategory_id ?? "");
       setAccountId(editing.financial_account_id ?? "");
-      setCardId(editing.credit_card_id ?? "");
+      setDestinationAccountId(
+        typeof editing.metadata?.destination_account_id === "string"
+          ? editing.metadata.destination_account_id
+          : "",
+      );
       setProjectId(editing.project_id ?? "");
       setPaymentMethod(editing.payment_method ?? "");
       setIsRecurring(!!editing.is_recurring);
@@ -126,7 +130,7 @@ export function TransactionDialog({
       setCategoryId("");
       setSubcategoryId("");
       setAccountId("");
-      setCardId("");
+      setDestinationAccountId("");
       setProjectId("");
       setPaymentMethod("");
       setIsRecurring(false);
@@ -139,8 +143,7 @@ export function TransactionDialog({
   }, [editing, open]);
 
   const filteredSubs = subcategories.filter((s) => s.category_id === categoryId);
-  const needsAccount = type === "income" || type === "expense" || type === "transfer";
-  const needsCard = type === "credit_card_purchase";
+  const needsAccount = true;
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -152,6 +155,20 @@ export function TransactionDialog({
     if (!Number.isFinite(numeric) || numeric <= 0) {
       toast.error("Informe um valor válido, maior que zero.");
       return;
+    }
+    if (!accountId) {
+      toast.error("Selecione uma conta financeira.");
+      return;
+    }
+    if (type === "transfer") {
+      if (!destinationAccountId) {
+        toast.error("Selecione a conta de destino da transferência.");
+        return;
+      }
+      if (accountId === destinationAccountId) {
+        toast.error("A conta de origem e a conta de destino precisam ser diferentes.");
+        return;
+      }
     }
     const signed =
       type === "income" ? Math.abs(numeric) : type === "expense" ? -Math.abs(numeric) : -Math.abs(numeric);
@@ -165,7 +182,7 @@ export function TransactionDialog({
       category_id: categoryId || null,
       subcategory_id: subcategoryId || null,
       financial_account_id: needsAccount ? accountId || null : null,
-      credit_card_id: needsCard ? cardId || null : null,
+      credit_card_id: null,
       project_id: projectId || null,
       payment_method: paymentMethod || null,
       is_recurring: isRecurring,
@@ -173,6 +190,14 @@ export function TransactionDialog({
       installment_number: isInstallment && installmentNumber ? Number(installmentNumber) : null,
       installment_total: isInstallment && installmentTotal ? Number(installmentTotal) : null,
       notes: notes.trim() || null,
+      metadata:
+        type === "transfer"
+          ? {
+              destination_account_id: destinationAccountId,
+              transfer_direction: "between_accounts",
+              affects_income_expense: false,
+            }
+          : null,
     };
 
     try {
@@ -217,8 +242,8 @@ export function TransactionDialog({
         </DialogHeader>
 
         <form onSubmit={handleSubmit} className="space-y-5">
-          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-            {(Object.keys(TYPE_LABELS) as TxType[]).map((t) => (
+          <div className="grid grid-cols-3 gap-2">
+            {MANUAL_TRANSACTION_TYPES.map((t) => (
               <button
                 key={t}
                 type="button"
@@ -344,19 +369,20 @@ export function TransactionDialog({
             </div>
           )}
 
-          {needsCard && (
+          {type === "transfer" && (
             <div className="space-y-1.5">
-              <Label>Cartão de crédito</Label>
-              <Select value={cardId} onValueChange={setCardId}>
+              <Label>Conta de destino</Label>
+              <Select value={destinationAccountId} onValueChange={setDestinationAccountId}>
                 <SelectTrigger>
                   <SelectValue
-                    placeholder={cards.length ? "Selecionar cartão" : "Nenhum cartão cadastrado"}
+                    placeholder={accounts.length ? "Selecionar destino" : "Nenhuma conta cadastrada"}
                   />
                 </SelectTrigger>
                 <SelectContent>
-                  {cards.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
+                  {accounts.map((account) => (
+                    <SelectItem key={account.id} value={account.id}>
+                      {account.name}
+                      {account.institution ? ` · ${account.institution}` : ""}
                     </SelectItem>
                   ))}
                 </SelectContent>
