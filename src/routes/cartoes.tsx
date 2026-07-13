@@ -24,6 +24,11 @@ import {
   type CreditCardInvoice,
 } from "@/lib/credit-cards";
 import type { CreditCard } from "@/lib/finance-api";
+import {
+  computeUsedCreditLimit,
+  deriveInvoiceBalance,
+  type InvoiceBalance,
+} from "@/lib/finance-domain";
 import { CreditCardDialog } from "@/components/finance/CreditCardDialog";
 import { CardPurchaseDialog } from "@/components/finance/CardPurchaseDialog";
 import {
@@ -78,11 +83,17 @@ function Cartoes() {
       const next = computeInvoicePeriod(nextDate, card);
       const curInv = findInvoice(invoices, card.id, current.referenceMonth);
       const nextInv = findInvoice(invoices, card.id, next.referenceMonth);
-      currentTotal += curInv?.total_amount ?? 0;
-      nextTotal += nextInv?.total_amount ?? 0;
+      currentTotal += invoiceBalance(curInv).pendingAmount;
+      nextTotal += invoiceBalance(nextInv).pendingAmount;
       if (card.credit_limit) totalLimit += card.credit_limit;
-      // openInvoices sum = "compromisso ativo"
-      usedNow += (curInv?.total_amount ?? 0) + (nextInv?.total_amount ?? 0);
+      usedNow += computeUsedCreditLimit(
+        invoices
+          .filter((invoice) => invoice.credit_card_id === card.id)
+          .map((invoice) => ({
+            totalAmount: invoice.total_amount,
+            paidAmount: invoice.paid_amount,
+          })),
+      );
     }
     return { currentTotal, nextTotal, totalLimit, usedNow };
   }, [cards, invoices, today]);
@@ -265,6 +276,13 @@ function findInvoice(
   );
 }
 
+function invoiceBalance(invoice: CreditCardInvoice | undefined): InvoiceBalance {
+  return deriveInvoiceBalance({
+    totalAmount: invoice?.total_amount ?? 0,
+    paidAmount: invoice?.paid_amount ?? 0,
+  });
+}
+
 function statusPill(status: string) {
   const map: Record<string, string> = {
     open: "bg-sky-soft text-sky",
@@ -299,9 +317,18 @@ function CardTile({
   const next = computeInvoicePeriod(shiftMonth(today, 1), card);
   const curInv = findInvoice(invoices, card.id, current.referenceMonth);
   const nextInv = findInvoice(invoices, card.id, next.referenceMonth);
+  const currentBalance = invoiceBalance(curInv);
+  const nextBalance = invoiceBalance(nextInv);
   const best = bestPurchaseDay(card.closing_day ?? 1);
   const limit = card.credit_limit ?? 0;
-  const used = (curInv?.total_amount ?? 0) + (nextInv?.total_amount ?? 0);
+  const used = computeUsedCreditLimit(
+    invoices
+      .filter((invoice) => invoice.credit_card_id === card.id)
+      .map((invoice) => ({
+        totalAmount: invoice.total_amount,
+        paidAmount: invoice.paid_amount,
+      })),
+  );
   const pct = limit ? Math.min(100, (used / limit) * 100) : 0;
 
   return (
@@ -324,14 +351,19 @@ function CardTile({
         <div className="mt-6 grid grid-cols-2 gap-4">
           <div>
             <div className="text-[11px] opacity-70">Fatura atual · {current.label}</div>
-            <div className="font-serif text-2xl">{brl(curInv?.total_amount ?? 0)}</div>
+            <div className="font-serif text-2xl">{brl(currentBalance.pendingAmount)}</div>
             <div className="text-[11px] opacity-70">
               vence {new Date(current.dueDate).toLocaleDateString("pt-BR")}
             </div>
+            {currentBalance.excessCredit > 0 && (
+              <div className="text-[11px] opacity-70">
+                crédito {brl(currentBalance.excessCredit)}
+              </div>
+            )}
           </div>
           <div>
             <div className="text-[11px] opacity-70">Próxima · {next.label}</div>
-            <div className="font-serif text-2xl">{brl(nextInv?.total_amount ?? 0)}</div>
+            <div className="font-serif text-2xl">{brl(nextBalance.pendingAmount)}</div>
             <div className="text-[11px] opacity-70">
               vence {new Date(next.dueDate).toLocaleDateString("pt-BR")}
             </div>
@@ -402,6 +434,7 @@ function CardAnalysis({
   card: CreditCard;
   invoices: CreditCardInvoice[];
   txs: Array<{
+    type: string;
     credit_card_id: string | null;
     credit_card_invoice_id?: string | null;
     amount: number;
@@ -416,9 +449,12 @@ function CardAnalysis({
   const next = computeInvoicePeriod(shiftMonth(today, 1), card);
   const curInv = findInvoice(invoices, card.id, current.referenceMonth);
   const nextInv = findInvoice(invoices, card.id, next.referenceMonth);
+  const currentBalance = invoiceBalance(curInv);
+  const nextBalance = invoiceBalance(nextInv);
 
   const invoiceTxs = txs.filter(
     (t) =>
+      t.type === "credit_card_purchase" &&
       t.credit_card_id === card.id &&
       (t.credit_card_invoice_id === curInv?.id ||
         t.credit_card_invoice_id === nextInv?.id),
@@ -447,11 +483,11 @@ function CardAnalysis({
     }));
 
   const insight = (() => {
-    if (!nextInv || nextInv.total_amount === 0) {
+    if (!nextInv || nextBalance.pendingAmount === 0) {
       return "A próxima fatura ainda está limpa. É um bom momento para respirar antes da próxima compra planejada.";
     }
     const topName = topCats[0]?.name ?? "compras";
-    return `Sua próxima fatura já tem ${brl(nextInv.total_amount)} comprometidos antes mesmo do fechamento. A maior concentração está em ${topName}.`;
+    return `Sua próxima fatura já tem ${brl(nextBalance.pendingAmount)} comprometidos antes mesmo do fechamento. A maior concentração está em ${topName}.`;
   })();
 
   return (
@@ -462,7 +498,7 @@ function CardAnalysis({
             {card.name}
           </div>
           <div className="font-serif text-xl">
-            {brl((curInv?.total_amount ?? 0) + (nextInv?.total_amount ?? 0))}{" "}
+            {brl(currentBalance.pendingAmount + nextBalance.pendingAmount)}{" "}
             <span className="text-sm font-normal text-muted-foreground">
               comprometido nas próximas duas faturas
             </span>
@@ -476,13 +512,13 @@ function CardAnalysis({
           <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
             Atual
           </div>
-          <div className="font-serif text-lg">{brl(curInv?.total_amount ?? 0)}</div>
+          <div className="font-serif text-lg">{brl(currentBalance.pendingAmount)}</div>
         </div>
         <div className="rounded-xl bg-surface-soft p-3">
           <div className="text-[11px] uppercase tracking-widest text-muted-foreground">
             Próxima
           </div>
-          <div className="font-serif text-lg">{brl(nextInv?.total_amount ?? 0)}</div>
+          <div className="font-serif text-lg">{brl(nextBalance.pendingAmount)}</div>
         </div>
       </div>
 

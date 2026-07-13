@@ -1,5 +1,11 @@
 import { supabase } from "./supabase";
 import type { CreditCard } from "./finance-api";
+import {
+  classifyPersistedInvoiceTransaction,
+  deriveInvoiceAmounts,
+  deriveInvoiceStatus,
+  type ImportedTransactionKind,
+} from "./finance-domain";
 
 export type CreditCardInput = {
   name: string;
@@ -198,43 +204,44 @@ export async function recalcInvoiceTotal(invoiceId: string) {
     .eq("credit_card_invoice_id", invoiceId);
   if (error) throw error;
 
-  let total = 0;
-  let paid = 0;
+  const entries: Array<{ amount: number; kind: ImportedTransactionKind }> = [];
   for (const r of rows ?? []) {
     const rr = r as {
       amount: number;
       type?: string;
       metadata?: Record<string, unknown> | null;
     };
-    const amt = Math.abs(Number(rr.amount ?? 0));
-    if (rr.type === "credit_card_purchase") {
-      total += amt;
-    } else if (rr.type === "transfer") {
-      const meta = (rr.metadata ?? {}) as Record<string, unknown>;
-      if (meta.movement_type === "credit_card_payment" || meta.invoice_payment === true) {
-        paid += amt;
-      }
-    }
+    const kind = classifyPersistedInvoiceTransaction({
+      type: rr.type ?? "",
+      metadata: rr.metadata,
+    });
+    if (kind) entries.push({ amount: Number(rr.amount ?? 0), kind });
   }
+  const amounts = deriveInvoiceAmounts(entries);
 
   const { data: inv } = await supabase
     .from("credit_card_invoices")
-    .select("status")
+    .select("closing_date, due_date")
     .eq("id", invoiceId)
     .maybeSingle();
-  const currentStatus = (inv as { status?: string } | null)?.status ?? "open";
-  // Only mark as paid when the invoice actually has charges AND payments cover them.
-  const nextStatus =
-    total > 0 && paid >= total
-      ? "paid"
-      : currentStatus === "paid"
-        ? "open"
-        : currentStatus;
+  if (!inv) throw new Error("Fatura não encontrada para recálculo.");
+  const invoiceDates = inv as { closing_date: string; due_date: string };
+  const nextStatus = deriveInvoiceStatus({
+    amounts,
+    closingDate: invoiceDates.closing_date,
+    dueDate: invoiceDates.due_date,
+    today: toISODate(new Date()),
+  });
 
-  await supabase
+  const { error: updateError } = await supabase
     .from("credit_card_invoices")
-    .update({ total_amount: total, paid_amount: paid, status: nextStatus })
+    .update({
+      total_amount: amounts.totalAmount,
+      paid_amount: amounts.paidAmount,
+      status: nextStatus,
+    })
     .eq("id", invoiceId);
+  if (updateError) throw updateError;
 }
 
 export async function getOrCreateInvoiceByDueDate(

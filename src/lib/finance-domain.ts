@@ -410,6 +410,49 @@ export type InvoiceAmounts = {
   excessCredit: number;
 };
 
+export type InvoiceBalance = Pick<
+  InvoiceAmounts,
+  "totalAmount" | "paidAmount" | "pendingAmount" | "excessCredit"
+>;
+
+export function deriveInvoiceBalance(input: {
+  totalAmount: number;
+  paidAmount: number;
+}): InvoiceBalance {
+  const totalAmount = roundCurrency(Math.max(Number(input.totalAmount) || 0, 0));
+  const paidAmount = roundCurrency(Math.max(Number(input.paidAmount) || 0, 0));
+  return {
+    totalAmount,
+    paidAmount,
+    pendingAmount: roundCurrency(Math.max(totalAmount - paidAmount, 0)),
+    excessCredit: roundCurrency(Math.max(paidAmount - totalAmount, 0)),
+  };
+}
+
+export function classifyPersistedInvoiceTransaction(input: {
+  type: string;
+  metadata?: Record<string, unknown> | null;
+}): ImportedTransactionKind | null {
+  const movementType = input.metadata?.movement_type;
+  if (input.type === "credit_card_purchase") {
+    if (movementType === "financial_charge" || movementType === "previous_balance") {
+      return movementType;
+    }
+    return "standard";
+  }
+  if (input.type !== "transfer") return null;
+  if (
+    movementType === "credit_card_payment" ||
+    movementType === "invoice_credit" ||
+    movementType === "refund" ||
+    movementType === "cashback"
+  ) {
+    return movementType;
+  }
+  if (input.metadata?.invoice_payment === true) return "credit_card_payment";
+  return null;
+}
+
 export function deriveInvoiceAmounts(
   entries: ReadonlyArray<{
     amount: number;
@@ -436,11 +479,12 @@ export function deriveInvoiceAmounts(
 
   charges = roundCurrency(charges);
   credits = roundCurrency(credits);
-  const totalAmount = roundCurrency(Math.max(charges - credits, 0));
-  const creditBalance = roundCurrency(Math.max(credits - charges, 0));
-  const paidAmount = roundCurrency(payments);
-  const pendingAmount = roundCurrency(Math.max(totalAmount - paidAmount, 0));
-  const excessCredit = roundCurrency(Math.max(paidAmount + creditBalance - totalAmount, 0));
+  const totalAmount = charges;
+  const paidAmount = roundCurrency(payments + credits);
+  const { pendingAmount, excessCredit } = deriveInvoiceBalance({
+    totalAmount,
+    paidAmount,
+  });
 
   return { charges, credits, totalAmount, paidAmount, pendingAmount, excessCredit };
 }
@@ -453,8 +497,7 @@ export function deriveInvoiceStatus(input: {
   dueDate: string;
   today: string;
 }): InvoiceStatus {
-  const hasSettlement = input.amounts.totalAmount > 0 || input.amounts.excessCredit > 0;
-  if (hasSettlement && input.amounts.pendingAmount <= 0) return "paid";
+  if (input.amounts.totalAmount > 0 && input.amounts.pendingAmount <= 0) return "paid";
   if (input.amounts.pendingAmount > 0 && input.today > input.dueDate) return "overdue";
   if (input.today > input.closingDate) return "closed";
   return "open";
@@ -466,7 +509,11 @@ export function computeUsedCreditLimit(
   return roundCurrency(
     invoices.reduce(
       (used, invoice) =>
-        used + Math.max(Number(invoice.totalAmount) - Number(invoice.paidAmount ?? 0), 0),
+        used +
+        deriveInvoiceBalance({
+          totalAmount: invoice.totalAmount,
+          paidAmount: invoice.paidAmount ?? 0,
+        }).pendingAmount,
       0,
     ),
   );

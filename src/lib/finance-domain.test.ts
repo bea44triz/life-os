@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  classifyPersistedInvoiceTransaction,
   classifyImportedTransaction,
   computeInstallmentAmounts,
   computeInvoicePeriod,
   computeUsedCreditLimit,
   deriveImportedApprovalPlan,
+  deriveInvoiceBalance,
   deriveInvoiceAmounts,
   deriveInvoiceStatus,
   isGenericDescription,
@@ -100,8 +102,8 @@ test("derives invoice total, payment, pending balance and excess credit", () => 
   assert.deepEqual(amounts, {
     charges: 105,
     credits: 20,
-    totalAmount: 85,
-    paidAmount: 100,
+    totalAmount: 105,
+    paidAmount: 120,
     pendingAmount: 0,
     excessCredit: 15,
   });
@@ -151,6 +153,33 @@ test("used credit limit excludes amounts already paid and never becomes negative
       { totalAmount: 100, paidAmount: 150 },
     ]),
     750,
+  );
+});
+
+test("derives pending balance and excess credit without adding invoice columns", () => {
+  assert.deepEqual(deriveInvoiceBalance({ totalAmount: 500, paidAmount: 125 }), {
+    totalAmount: 500,
+    paidAmount: 125,
+    pendingAmount: 375,
+    excessCredit: 0,
+  });
+  assert.deepEqual(deriveInvoiceBalance({ totalAmount: 500, paidAmount: 620 }), {
+    totalAmount: 500,
+    paidAmount: 620,
+    pendingAmount: 0,
+    excessCredit: 120,
+  });
+});
+
+test("does not mark an invoice with only excess credit as paid", () => {
+  assert.equal(
+    deriveInvoiceStatus({
+      closingDate: "2026-07-20",
+      dueDate: "2026-07-27",
+      today: "2026-07-22",
+      amounts: { totalAmount: 0, pendingAmount: 0, excessCredit: 50 },
+    }),
+    "closed",
   );
 });
 
@@ -315,5 +344,56 @@ test("invoice credits validate without a bank account while payments still requi
   assert.match(
     validateImportedLineForApproval({ ...base, description: "Pagamento recebido" }) ?? "",
     /selecione a conta/i,
+  );
+});
+
+test("maps persisted invoice transactions and excludes unrelated transfers", () => {
+  assert.equal(
+    classifyPersistedInvoiceTransaction({
+      type: "credit_card_purchase",
+      metadata: { movement_type: "financial_charge" },
+    }),
+    "financial_charge",
+  );
+  assert.equal(
+    classifyPersistedInvoiceTransaction({
+      type: "transfer",
+      metadata: { movement_type: "cashback" },
+    }),
+    "cashback",
+  );
+  assert.equal(
+    classifyPersistedInvoiceTransaction({
+      type: "transfer",
+      metadata: { destination_account_id: "account-2" },
+    }),
+    null,
+  );
+});
+
+test("derives a real Nubank invoice with purchases, charges, previous balance and credits", () => {
+  const amounts = deriveInvoiceAmounts([
+    { amount: 1200, kind: "standard" },
+    { amount: 300, kind: "standard" },
+    { amount: 10, kind: "financial_charge" },
+    { amount: 2, kind: "financial_charge" },
+    { amount: 5, kind: "financial_charge" },
+    { amount: 100, kind: "previous_balance" },
+    { amount: 1000, kind: "credit_card_payment" },
+    { amount: 50, kind: "invoice_credit" },
+    { amount: 100, kind: "refund" },
+    { amount: 20, kind: "cashback" },
+  ]);
+  assert.deepEqual(amounts, {
+    charges: 1617,
+    credits: 170,
+    totalAmount: 1617,
+    paidAmount: 1170,
+    pendingAmount: 447,
+    excessCredit: 0,
+  });
+  assert.equal(
+    computeUsedCreditLimit([{ totalAmount: amounts.totalAmount, paidAmount: amounts.paidAmount }]),
+    447,
   );
 });
