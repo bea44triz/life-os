@@ -15,7 +15,13 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageBody, PageHeader, Section, brl } from "@/components/ui-bits";
-import { useAccounts, useCategories, useCreditCards, useProjects } from "@/lib/finance-hooks";
+import {
+  useAccounts,
+  useCategories,
+  useCreditCards,
+  useInvoices,
+  useProjects,
+} from "@/lib/finance-hooks";
 import {
   useApproveLine,
   useImportedFile,
@@ -42,11 +48,15 @@ import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import {
   classifyImportedTransaction,
+  chooseInvoiceDestination,
+  deriveImportedApprovalPlan,
+  getImportedTransactionPresentation,
   isInvoiceCreditMovement,
   readImportedLineSelection,
   validateImportedLineForApproval,
   type SuggestedTransactionType,
 } from "@/lib/finance-domain";
+import { computeInvoicePeriod, type CreditCardInvoice } from "@/lib/credit-cards";
 
 export const Route = createFileRoute("/importar")({
   head: () => ({
@@ -96,6 +106,8 @@ function validateLineForApprove(
       line.selected_financial_account_id ?? file.financial_account_id ?? null,
     creditCardId: line.selected_credit_card_id ?? file.credit_card_id ?? null,
     destinationAccountId,
+    creditCardInvoiceId: line.selected_credit_card_invoice_id,
+    canResolveInvoice: !!line.extracted_date,
   });
 }
 
@@ -504,6 +516,7 @@ function ReviewScreen({ fileId, onBack }: { fileId: string; onBack: () => void }
   const { data: categories = [] } = useCategories();
   const { data: accounts = [] } = useAccounts();
   const { data: cards = [] } = useCreditCards();
+  const { data: invoices = [] } = useInvoices();
   const { data: projects = [] } = useProjects();
 
   const approve = useApproveLine();
@@ -713,6 +726,7 @@ function ReviewScreen({ fileId, onBack }: { fileId: string; onBack: () => void }
                 categories={categories}
                 accounts={accounts}
                 cards={cards}
+                invoices={invoices}
                 projects={projects}
               />
             ))}
@@ -738,6 +752,7 @@ function LineRow({
   categories,
   accounts,
   cards,
+  invoices,
   projects,
 }: {
   line: ImportedTransactionLine;
@@ -753,7 +768,13 @@ function LineRow({
   categoryName: (id: string | null) => string;
   categories: Array<{ id: string; name: string }>;
   accounts: Array<{ id: string; name: string }>;
-  cards: Array<{ id: string; name: string }>;
+  cards: Array<{
+    id: string;
+    name: string;
+    closing_day: number | null;
+    due_day: number | null;
+  }>;
+  invoices: CreditCardInvoice[];
   projects: Array<{ id: string; name: string }>;
 }) {
   const updateLine = useUpdateImportedLine();
@@ -769,6 +790,47 @@ function LineRow({
   const suggested = classification.suggestedType;
   const currentType: LineType | "" = persistedType ?? suggested ?? "";
   const isSuggestion = !persistedType && suggested !== null;
+  const approvalPlan = deriveImportedApprovalPlan({
+    classification,
+    context: file.file_context,
+    amount: amountNum,
+    selectedType: persistedType,
+  });
+  const presentation = getImportedTransactionPresentation({
+    classification,
+    context: file.file_context,
+    description: line.extracted_description,
+    effectiveType: currentType || null,
+  });
+
+  const resolvedCardId =
+    line.selected_credit_card_id ?? file.credit_card_id ?? null;
+  const fileDueDate =
+    typeof file.metadata?.invoice_due_date === "string"
+      ? file.metadata.invoice_due_date
+      : null;
+  const dueDateInvoiceId = invoices.find(
+    (invoice) =>
+      invoice.credit_card_id === resolvedCardId &&
+      !!fileDueDate &&
+      invoice.due_date.slice(0, 10) === fileDueDate.slice(0, 10),
+  )?.id;
+  const cardForPeriod = cards.find((card) => card.id === resolvedCardId);
+  const datedReference =
+    cardForPeriod && line.extracted_date
+      ? computeInvoicePeriod(line.extracted_date, cardForPeriod).referenceMonth
+      : null;
+  const datedInvoiceId = invoices.find(
+    (invoice) =>
+      invoice.credit_card_id === resolvedCardId &&
+      !!datedReference &&
+      invoice.reference_month.slice(0, 10) === datedReference,
+  )?.id;
+  const defaultInvoiceId = chooseInvoiceDestination({
+    selectedInvoiceId: line.selected_credit_card_invoice_id,
+    dueDateInvoiceId,
+    datedInvoiceId,
+  });
 
   const [date, setDate] = useState(line.extracted_date ?? "");
   const [desc, setDesc] = useState(line.extracted_description ?? "");
@@ -779,7 +841,10 @@ function LineRow({
   const [projectId, setProjectId] = useState(line.selected_project_id ?? "");
   const [accountId, setAccountId] = useState(line.selected_financial_account_id ?? "");
   const [destAccountId, setDestAccountId] = useState(persistedDest ?? "");
-  const [cardId, setCardId] = useState(line.selected_credit_card_id ?? "");
+  const [cardId, setCardId] = useState(
+    line.selected_credit_card_id ?? file.credit_card_id ?? "",
+  );
+  const [invoiceId, setInvoiceId] = useState(line.selected_credit_card_invoice_id ?? "");
   const [editType, setEditType] = useState<LineType | "">(currentType);
 
   async function persistMeta(patch: Record<string, unknown>) {
@@ -827,6 +892,7 @@ function LineRow({
           selected_project_id: projectId || null,
           selected_financial_account_id: accountId || null,
           selected_credit_card_id: cardId || null,
+          selected_credit_card_invoice_id: invoiceId || defaultInvoiceId || null,
           metadata: nextMeta,
         },
       });
@@ -854,12 +920,33 @@ function LineRow({
 
   const isCredit = file.file_context === "credit_card";
   const isPending = line.review_status === "pending";
-  const invoicePayment = isInvoiceCreditMovement(classification.kind);
-  const invoiceCharge =
-    classification.kind === "financial_charge" ||
-    classification.kind === "previous_balance";
+  const invoiceMovement = isInvoiceCreditMovement(classification.kind);
+  const isActualPayment = classification.kind === "credit_card_payment";
+  const editApprovalPlan = deriveImportedApprovalPlan({
+    classification,
+    context: file.file_context,
+    amount: Number(amount || amountNum),
+    selectedType: editType || null,
+  });
   const needsReview =
-    isPending && !persistedType && classification.requiresReview && !invoicePayment;
+    isPending && !persistedType && classification.requiresReview;
+  const effectiveInvoiceId = invoiceId || defaultInvoiceId || "";
+  const targetInvoice = invoices.find((invoice) => invoice.id === effectiveInvoiceId);
+  const invoiceOptions = invoices.filter(
+    (invoice) => invoice.credit_card_id === (cardId || resolvedCardId),
+  );
+  const badgeTone =
+    presentation.tone === "positive"
+      ? "bg-sage/15 text-sage"
+      : presentation.tone === "negative"
+        ? "bg-clay/15 text-clay"
+        : "bg-secondary text-muted-foreground";
+  const suggestionSource =
+    typeof meta.suggestion_source === "string" ? meta.suggestion_source : null;
+  const confidence =
+    typeof meta.suggestion_confidence === "number" ? meta.suggestion_confidence : null;
+  const trnType = typeof meta.trntype === "string" ? meta.trntype : null;
+  const fitId = typeof meta.fitid === "string" ? meta.fitid : null;
 
   return (
     <div className={cn("p-4", selected && "bg-secondary/40")}>
@@ -878,19 +965,12 @@ function LineRow({
               {line.extracted_description || "Sem descrição"}
             </div>
             {statusPill}
-            {invoicePayment && (
-              <span className="rounded-full bg-sage/15 px-2 py-0.5 text-[10px] text-sage">
-                Pagamento de fatura
-              </span>
-            )}
-            {invoiceCharge && !invoicePayment && (
-              <span className="rounded-full bg-clay/15 px-2 py-0.5 text-[10px] text-clay">
-                Encargo da fatura
-              </span>
-            )}
+            <span className={cn("rounded-full px-2 py-0.5 text-[10px]", badgeTone)}>
+              {presentation.badge}
+            </span>
             {needsReview && (
               <span className="rounded-full bg-gold-soft px-2 py-0.5 text-[10px] text-ink">
-                Revisar: possível pagamento ou crédito na fatura
+                Precisa revisão
               </span>
             )}
             {line.suggested_category_id && !line.selected_category_id && (
@@ -909,13 +989,11 @@ function LineRow({
             <span
               className={cn(
                 "font-medium",
-                invoicePayment
+                presentation.tone === "positive"
                   ? "text-sage"
-                  : currentType === "transfer"
-                    ? "text-muted-foreground"
-                    : currentType === "income"
-                      ? "text-sage"
-                      : "text-clay",
+                  : presentation.tone === "negative"
+                    ? "text-clay"
+                    : "text-muted-foreground",
               )}
             >
               {brl(Math.abs(amountNum))}
@@ -923,7 +1001,42 @@ function LineRow({
             {line.selected_category_id && (
               <span>Categoria: {categoryName(line.selected_category_id)}</span>
             )}
+            <span>{presentation.direction}</span>
+            {isCredit && (
+              <span>
+                {cards.find((card) => card.id === resolvedCardId)?.name ?? "Cartão pendente"}
+              </span>
+            )}
+            {!isCredit && (
+              <span>
+                {accounts.find(
+                  (account) =>
+                    account.id ===
+                    (line.selected_financial_account_id ?? file.financial_account_id),
+                )?.name ?? "Conta pendente"}
+              </span>
+            )}
+            {targetInvoice && (
+              <span>
+                Fatura vence{" "}
+                {new Date(`${targetInvoice.due_date.slice(0, 10)}T12:00:00`).toLocaleDateString(
+                  "pt-BR",
+                )}
+              </span>
+            )}
+            {approvalPlan?.isInvoiceMovement && !targetInvoice && (
+              <span>Fatura será resolvida pelo vencimento/data</span>
+            )}
           </div>
+
+          {(suggestionSource || confidence != null || trnType || fitId) && (
+            <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
+              {suggestionSource && <span>Origem: {suggestionSource}</span>}
+              {confidence != null && <span>Confiança: {Math.round(confidence * 100)}%</span>}
+              {trnType && <span className="rounded-full bg-secondary px-2 py-0.5">OFX {trnType}</span>}
+              {fitId && <span className="rounded-full bg-secondary px-2 py-0.5">FITID {fitId}</span>}
+            </div>
+          )}
 
           {isPending && (
             <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -942,7 +1055,9 @@ function LineRow({
                   </SelectContent>
                 </Select>
               </div>
-              {isCredit && currentType === "expense" && !invoicePayment && (
+              {isCredit &&
+                currentType === "expense" &&
+                classification.kind === "standard" && (
                 <span className="rounded-full bg-clay/15 px-2 py-0.5 text-[10px] text-clay">
                   Despesa no cartão
                 </span>
@@ -950,10 +1065,10 @@ function LineRow({
               {isSuggestion && currentType && (
                 <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
                   sugestão: {TYPE_LABELS[currentType as LineType]}
-                  {invoicePayment ? " (pagamento de fatura)" : ""}
+                  {invoiceMovement ? ` (${presentation.badge.toLowerCase()})` : ""}
                 </span>
               )}
-              {currentType === "transfer" && !invoicePayment && (
+              {currentType === "transfer" && !approvalPlan?.isInvoiceMovement && (
                 <div className="min-w-[200px]">
                   <Select
                     value={persistedDest ?? undefined}
@@ -978,7 +1093,7 @@ function LineRow({
                   </Select>
                 </div>
               )}
-              {invoicePayment && currentType === "transfer" && !line.selected_financial_account_id && !file.financial_account_id && (
+              {isActualPayment && currentType === "transfer" && !line.selected_financial_account_id && !file.financial_account_id && (
                 <span className="text-[10px] text-clay">
                   Selecione a conta de origem no editor para aprovar.
                 </span>
@@ -1088,87 +1203,95 @@ function LineRow({
               </SelectContent>
             </Select>
           </Field>
-          {isCredit && editType === "expense" ? (
-            <Field label="Cartão">
-              <Select value={cardId} onValueChange={setCardId}>
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="Selecione" />
-                </SelectTrigger>
-                <SelectContent>
-                  {cards.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
-                      {c.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          ) : editType === "transfer" ? (
-            invoicePayment ? (
-              <>
+          {editApprovalPlan?.isInvoiceMovement ? (
+            <>
+              {isActualPayment && (
                 <Field label="Conta de origem (pagamento)">
                   <Select value={accountId} onValueChange={setAccountId}>
                     <SelectTrigger className="h-10">
                       <SelectValue placeholder="Selecione" />
                     </SelectTrigger>
                     <SelectContent>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
+                      {accounts.map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </Field>
-                <Field label="Cartão">
-                  <Select value={cardId} onValueChange={setCardId}>
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Selecione" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {cards.map((c) => (
-                        <SelectItem key={c.id} value={c.id}>
-                          {c.name}
+              )}
+              <Field label="Cartão">
+                <Select
+                  value={cardId}
+                  onValueChange={(nextCardId) => {
+                    setCardId(nextCardId);
+                    setInvoiceId("");
+                  }}
+                >
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="Selecione" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {cards.map((card) => (
+                      <SelectItem key={card.id} value={card.id}>
+                        {card.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Fatura de destino">
+                <Select value={effectiveInvoiceId} onValueChange={setInvoiceId}>
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="Resolver pela data" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {invoiceOptions.map((invoice) => (
+                      <SelectItem key={invoice.id} value={invoice.id}>
+                        Vence{" "}
+                        {new Date(
+                          `${invoice.due_date.slice(0, 10)}T12:00:00`,
+                        ).toLocaleDateString("pt-BR")}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+            </>
+          ) : editType === "transfer" ? (
+            <>
+              <Field label="Conta de origem">
+                <Select value={accountId} onValueChange={setAccountId}>
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="Selecione" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts.map((account) => (
+                      <SelectItem key={account.id} value={account.id}>
+                        {account.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </Field>
+              <Field label="Conta de destino">
+                <Select value={destAccountId} onValueChange={setDestAccountId}>
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="Selecione" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {accounts
+                      .filter((account) => account.id !== accountId)
+                      .map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name}
                         </SelectItem>
                       ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </>
-            ) : (
-              <>
-                <Field label="Conta de origem">
-                  <Select value={accountId} onValueChange={setAccountId}>
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Selecione" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts.map((a) => (
-                        <SelectItem key={a.id} value={a.id}>
-                          {a.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-                <Field label="Conta de destino">
-                  <Select value={destAccountId} onValueChange={setDestAccountId}>
-                    <SelectTrigger className="h-10">
-                      <SelectValue placeholder="Selecione" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {accounts
-                        .filter((a) => a.id !== accountId)
-                        .map((a) => (
-                          <SelectItem key={a.id} value={a.id}>
-                            {a.name}
-                          </SelectItem>
-                        ))}
-                    </SelectContent>
-                  </Select>
-                </Field>
-              </>
-            )
+                  </SelectContent>
+                </Select>
+              </Field>
+            </>
           ) : (
             <Field label="Conta">
               <Select value={accountId} onValueChange={setAccountId}>

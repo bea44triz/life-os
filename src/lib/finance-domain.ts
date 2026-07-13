@@ -20,6 +20,63 @@ export type ImportedTransactionClassification = {
   requiresReview: boolean;
 };
 
+export type ImportedTransactionPresentation = {
+  badge: string;
+  direction: string;
+  tone: "positive" | "negative" | "neutral";
+};
+
+export function getImportedTransactionPresentation(input: {
+  classification: ImportedTransactionClassification;
+  context: ImportContext;
+  description?: string | null;
+  effectiveType?: SuggestedTransactionType | null;
+}): ImportedTransactionPresentation {
+  const kind = input.classification.kind;
+  if (kind === "credit_card_payment") {
+    return { badge: "Pagamento de fatura", direction: "Saída para fatura", tone: "positive" };
+  }
+  if (kind === "invoice_credit") {
+    const normalized = normalizeTransactionDescription(input.description);
+    return {
+      badge: normalized.includes("estorno") ? "Estorno" : "Crédito na fatura",
+      direction: "Crédito na fatura",
+      tone: "positive",
+    };
+  }
+  if (kind === "refund") {
+    return { badge: "Reembolso", direction: "Crédito na fatura", tone: "positive" };
+  }
+  if (kind === "cashback") {
+    return { badge: "Cashback", direction: "Crédito na fatura", tone: "positive" };
+  }
+  if (kind === "financial_charge") {
+    return { badge: "Encargo financeiro", direction: "Aumenta a fatura", tone: "negative" };
+  }
+  if (kind === "previous_balance") {
+    return { badge: "Saldo anterior", direction: "Aumenta a fatura", tone: "negative" };
+  }
+  const effectiveType = input.effectiveType ?? input.classification.suggestedType;
+  if (kind === "bank_transfer" || effectiveType === "transfer") {
+    return { badge: "Transferência", direction: "Entre contas", tone: "neutral" };
+  }
+  if (input.context === "credit_card") {
+    return { badge: "Despesa no cartão", direction: "Aumenta a fatura", tone: "negative" };
+  }
+  if (effectiveType === "income") {
+    return { badge: "Receita", direction: "Entrada", tone: "positive" };
+  }
+  return { badge: "Despesa", direction: "Saída", tone: "negative" };
+}
+
+export function chooseInvoiceDestination(input: {
+  selectedInvoiceId?: string | null;
+  dueDateInvoiceId?: string | null;
+  datedInvoiceId?: string | null;
+}): string | null {
+  return input.selectedInvoiceId ?? input.dueDateInvoiceId ?? input.datedInvoiceId ?? null;
+}
+
 export type ImportedLineSelection = {
   selectedType: SuggestedTransactionType | null;
   destinationAccountId: string | null;
@@ -283,6 +340,8 @@ export function validateImportedLineForApproval(input: {
   selectedType: SuggestedTransactionType | null;
   financialAccountId: string | null;
   creditCardId: string | null;
+  creditCardInvoiceId?: string | null;
+  canResolveInvoice?: boolean;
   destinationAccountId: string | null;
 }): string | null {
   if (!input.date || input.amount == null || !Number.isFinite(input.amount)) {
@@ -304,6 +363,9 @@ export function validateImportedLineForApproval(input: {
     return plan.type === "credit_card_purchase"
       ? "Compras no cartão precisam estar vinculadas a um cartão."
       : "Movimentos da fatura precisam estar vinculados a um cartão.";
+  }
+  if (plan.isInvoiceMovement && !input.creditCardInvoiceId && !input.canResolveInvoice) {
+    return "Selecione ou resolva a fatura de destino antes de aprovar.";
   }
   if (plan.requiresFinancialAccount && !input.financialAccountId) {
     if (plan.movementType === "credit_card_payment") {

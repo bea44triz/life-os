@@ -4,6 +4,7 @@ import {
   classifyPersistedInvoiceTransaction,
   classifyImportedTransaction,
   classifyInvoiceAnalysisBucket,
+  chooseInvoiceDestination,
   computeInstallmentAmounts,
   computeInvoicePeriod,
   computeUsedCreditLimit,
@@ -12,6 +13,7 @@ import {
   deriveInvoiceAmounts,
   deriveInvoiceStatus,
   isGenericDescription,
+  getImportedTransactionPresentation,
   MANUAL_TRANSACTION_TYPES,
   normalizeTransactionDescription,
   readImportedLineSelection,
@@ -241,6 +243,7 @@ test("approval validation uses the central classification and keeps review audit
     selectedType: null,
     financialAccountId: null,
     creditCardId: "card-1",
+    canResolveInvoice: true,
     destinationAccountId: null,
   });
   assert.match(paymentWithoutAccount ?? "", /selecione a conta/i);
@@ -338,6 +341,7 @@ test("invoice credits validate without a bank account while payments still requi
     selectedType: null,
     financialAccountId: null,
     creditCardId: "card-1",
+    canResolveInvoice: true,
     destinationAccountId: null,
   };
   for (const description of ["Estorno de compra", "Crédito em fatura", "Reembolso", "Cashback"]) {
@@ -431,4 +435,79 @@ test("separates purchases, financial charges and previous balance in card analys
       movement_type,
     );
   }
+});
+
+test("presents every imported movement with the expected review badge and tone", () => {
+  const present = (
+    description: string,
+    amount: number,
+    context: "bank_account" | "credit_card",
+  ) => {
+    const classification = classifyImportedTransaction({ description, amount, context });
+    return getImportedTransactionPresentation({
+      classification,
+      context,
+      description,
+    });
+  };
+  assert.equal(present("Salário", 1000, "bank_account").badge, "Receita");
+  assert.equal(present("Mercado", -100, "bank_account").badge, "Despesa");
+  assert.equal(present("Pix enviado", -100, "bank_account").tone, "neutral");
+  assert.equal(present("Compra Nubank", 100, "credit_card").badge, "Despesa no cartão");
+  assert.equal(present("Pagamento recebido", -100, "credit_card").badge, "Pagamento de fatura");
+  assert.equal(present("Crédito em fatura", -20, "credit_card").badge, "Crédito na fatura");
+  assert.equal(present("Estorno de compra", -20, "credit_card").badge, "Estorno");
+  assert.equal(present("Reembolso", -20, "credit_card").badge, "Reembolso");
+  assert.equal(present("Cashback", -20, "credit_card").badge, "Cashback");
+  assert.equal(present("Juros", 10, "credit_card").badge, "Encargo financeiro");
+  assert.equal(present("Saldo anterior", 10, "credit_card").badge, "Saldo anterior");
+});
+
+test("selected invoice destination wins over upload and date defaults", () => {
+  assert.equal(
+    chooseInvoiceDestination({
+      selectedInvoiceId: "invoice-selected",
+      dueDateInvoiceId: "invoice-due-date",
+      datedInvoiceId: "invoice-date",
+    }),
+    "invoice-selected",
+  );
+  assert.equal(
+    chooseInvoiceDestination({
+      dueDateInvoiceId: "invoice-due-date",
+      datedInvoiceId: "invoice-date",
+    }),
+    "invoice-due-date",
+  );
+});
+
+test("card review requires a selected or resolvable invoice destination", () => {
+  const error = validateImportedLineForApproval({
+    date: "2026-07-10",
+    amount: 100,
+    description: "Compra Nubank",
+    context: "credit_card",
+    selectedType: null,
+    financialAccountId: null,
+    creditCardId: "card-1",
+    creditCardInvoiceId: null,
+    canResolveInvoice: false,
+    destinationAccountId: null,
+  });
+  assert.match(error ?? "", /fatura de destino/i);
+  assert.equal(
+    validateImportedLineForApproval({
+      date: "2026-07-10",
+      amount: 100,
+      description: "Compra Nubank",
+      context: "credit_card",
+      selectedType: null,
+      financialAccountId: null,
+      creditCardId: "card-1",
+      creditCardInvoiceId: "invoice-1",
+      canResolveInvoice: false,
+      destinationAccountId: null,
+    }),
+    null,
+  );
 });

@@ -386,6 +386,11 @@ export async function startImport(
       const cache = new Map<string, string | null>();
       const rows = [];
       for (const p of parsed) {
+        const classification = classifyImportedTransaction({
+          description: p.description,
+          amount: Number(p.amount ?? 0),
+          context: input.fileContext,
+        });
         let suggestedId: string | null = null;
         const suggestName = suggestCategoryName(p.description ?? "");
         if (suggestName) {
@@ -409,7 +414,12 @@ export async function startImport(
           selected_credit_card_id:
             input.fileContext === "credit_card" ? input.creditCardId ?? null : null,
           review_status: "pending",
-          metadata: p.meta ?? null,
+          metadata: {
+            ...(p.meta ?? {}),
+            classification_kind: classification.kind,
+            suggestion_source: "Regras financeiras centrais",
+            requires_review: classification.requiresReview,
+          },
         });
       }
 
@@ -635,6 +645,20 @@ async function approveLineUnlocked(
       : null;
 
   async function resolveInvoice(card: CreditCard): Promise<string> {
+    if (line.selected_credit_card_invoice_id) {
+      const { data: selectedInvoice, error: selectedInvoiceError } = await supabase
+        .from("credit_card_invoices")
+        .select("id")
+        .eq("id", line.selected_credit_card_invoice_id)
+        .eq("user_id", userId)
+        .eq("credit_card_id", card.id)
+        .maybeSingle();
+      if (selectedInvoiceError) throw selectedInvoiceError;
+      if (!selectedInvoice) {
+        throw new Error("A fatura selecionada não pertence ao cartão desta linha.");
+      }
+      return (selectedInvoice as { id: string }).id;
+    }
     if (invoiceDueDate) {
       const inv = await getOrCreateInvoiceByDueDate(userId, card, invoiceDueDate);
       return inv.id;
