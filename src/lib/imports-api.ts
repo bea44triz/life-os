@@ -16,7 +16,7 @@ import {
 } from "./import-parsers";
 import {
   classifyImportedTransaction,
-  isInvoiceCreditMovement,
+  deriveImportedApprovalPlan,
   readImportedLineSelection,
 } from "./finance-domain";
 
@@ -103,6 +103,7 @@ export type ImportedTransactionLine = {
 };
 
 export const IMPORTS_BUCKET = "life-os-imports";
+const approvalsInFlight = new Set<string>();
 
 export type StartImportInput = {
   file: File;
@@ -541,6 +542,47 @@ export async function approveLine(
   line: ImportedTransactionLine,
   file: ImportedFile,
 ): Promise<void> {
+  if (approvalsInFlight.has(line.id)) {
+    throw new Error("Esta linha já está sendo aprovada. Aguarde a conclusão.");
+  }
+  approvalsInFlight.add(line.id);
+  try {
+    await approveLineUnlocked(userId, line, file);
+  } finally {
+    approvalsInFlight.delete(line.id);
+  }
+}
+
+async function approveLineUnlocked(
+  userId: string,
+  line: ImportedTransactionLine,
+  file: ImportedFile,
+): Promise<void> {
+  if (line.generated_transaction_id) {
+    throw new Error("Esta linha já foi aprovada e possui uma transação vinculada.");
+  }
+  const { data: persistedLine, error: persistedLineError } = await supabase
+    .from("imported_transaction_lines")
+    .select("review_status, generated_transaction_id")
+    .eq("id", line.id)
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (persistedLineError) {
+    console.error("Supabase error", persistedLineError);
+    throw persistedLineError;
+  }
+  if (!persistedLine) throw new Error("Linha importada não encontrada.");
+  const persisted = persistedLine as {
+    review_status: string;
+    generated_transaction_id: string | null;
+  };
+  if (persisted.generated_transaction_id || persisted.review_status === "approved") {
+    throw new Error("Esta linha já foi aprovada.");
+  }
+  if (persisted.review_status !== "pending") {
+    throw new Error("Somente linhas pendentes podem ser aprovadas.");
+  }
+
   if (!line.extracted_date || line.extracted_amount == null) {
     throw new Error("Data e valor são obrigatórios para aprovar.");
   }
@@ -566,27 +608,23 @@ export async function approveLine(
     context: file.file_context,
   });
 
-  const userTypes = ["income", "expense", "transfer"] as const;
-  type UserType = (typeof userTypes)[number];
-  type TxType = UserType | "credit_card_purchase";
-
-  const facing = userType ?? classification.suggestedType;
-  if (!facing || !(userTypes as readonly string[]).includes(facing)) {
+  const plan = deriveImportedApprovalPlan({
+    classification,
+    context: file.file_context,
+    amount,
+    selectedType: userType,
+  });
+  if (!plan) {
     throw new Error(
       "Escolha o tipo de lançamento antes de aprovar. Este lançamento parece ser um pagamento ou crédito na fatura.",
     );
   }
-
-  // Internal type: expense in a credit-card file becomes credit_card_purchase.
-  const type: TxType =
-    facing === "expense" && file.file_context === "credit_card"
-      ? "credit_card_purchase"
-      : facing;
+  const type = plan.type;
 
   let invoiceId: string | null = null;
   let cardId: string | null = null;
   let accountId: string | null = null;
-  let finalAmount = amount;
+  const finalAmount = plan.amount;
   let txMetadata: Record<string, unknown> | null = null;
 
   // Read invoice_due_date from the imported file's metadata (set on upload).
@@ -605,10 +643,10 @@ export async function approveLine(
     return inv.id;
   }
 
-  if (type === "credit_card_purchase") {
+  if (plan.isInvoiceMovement) {
     cardId = line.selected_credit_card_id ?? file.credit_card_id;
     if (!cardId) {
-      throw new Error("Compras no cartão precisam estar vinculadas a um cartão.");
+      throw new Error("Movimentos da fatura precisam estar vinculados a um cartão.");
     }
     const { data: card, error: cardErr } = await supabase
       .from("credit_cards")
@@ -620,79 +658,54 @@ export async function approveLine(
       throw cardErr;
     }
     invoiceId = await resolveInvoice(card as CreditCard);
-    finalAmount = -Math.abs(amount);
-  } else if (type === "transfer") {
-    const isInvoicePay =
-      file.file_context === "credit_card" &&
-      isInvoiceCreditMovement(classification.kind);
-
-    accountId = line.selected_financial_account_id ?? file.financial_account_id;
-    if (!accountId) {
-      throw new Error(
-        isInvoicePay
-          ? "Para registrar o pagamento da fatura, selecione a conta de onde saiu o dinheiro."
-          : "Para transferências, selecione a conta de origem e a conta de destino.",
-      );
-    }
-
-    if (isInvoicePay) {
-      const payCardId = line.selected_credit_card_id ?? file.credit_card_id ?? null;
-      let invoiceIdForPayment: string | null = null;
-      if (payCardId) {
-        const { data: card, error: cardErr } = await supabase
-          .from("credit_cards")
-          .select("*")
-          .eq("id", payCardId)
-          .single();
-        if (cardErr) {
-          console.error("Supabase error", cardErr);
-          throw cardErr;
-        }
-        try {
-          invoiceIdForPayment = await resolveInvoice(card as CreditCard);
-        } catch (e) {
-          console.error("invoice lookup failed for payment", e);
+    if (type === "transfer") {
+      if (plan.requiresFinancialAccount) {
+        accountId = line.selected_financial_account_id ?? file.financial_account_id;
+        if (!accountId) {
+          throw new Error(
+            "Para registrar o pagamento da fatura, selecione a conta de onde saiu o dinheiro.",
+          );
         }
       }
-      cardId = payCardId;
-      // Tag the payment transaction with the invoice so recalc picks it up as paid_amount.
-      invoiceId = invoiceIdForPayment;
-      finalAmount = -Math.abs(amount);
       txMetadata = {
-        movement_type: "credit_card_payment",
-        credit_card_id: payCardId,
-        invoice_id: invoiceIdForPayment,
-        invoice_payment: true,
+        movement_type: plan.movementType,
+        credit_card_id: cardId,
+        invoice_id: invoiceId,
+        invoice_payment: plan.movementType === "credit_card_payment",
         affects_income_expense: false,
         source: "credit_card_statement",
       };
-    } else {
-      if (!destinationAccountId) {
-        throw new Error(
-          "Para transferências, selecione a conta de origem e a conta de destino.",
-        );
-      }
-      if (accountId === destinationAccountId) {
-        throw new Error("A conta de origem e destino precisam ser diferentes.");
-      }
-      finalAmount = -Math.abs(amount);
+    } else if (plan.movementType) {
       txMetadata = {
-        destination_account_id: destinationAccountId,
-        transfer_direction: "between_accounts",
+        movement_type: plan.movementType,
+        source: "credit_card_statement",
       };
     }
+  } else if (type === "transfer") {
+    accountId = line.selected_financial_account_id ?? file.financial_account_id;
+    if (!accountId || !destinationAccountId) {
+      throw new Error(
+        "Para transferências, selecione a conta de origem e a conta de destino.",
+      );
+    }
+    if (accountId === destinationAccountId) {
+      throw new Error("A conta de origem e destino precisam ser diferentes.");
+    }
+    txMetadata = {
+      destination_account_id: destinationAccountId,
+      transfer_direction: "between_accounts",
+      affects_income_expense: false,
+    };
   } else if (type === "income") {
     accountId = line.selected_financial_account_id ?? file.financial_account_id;
     if (!accountId) {
       throw new Error("Receitas precisam de uma conta financeira.");
     }
-    finalAmount = Math.abs(amount);
   } else {
     accountId = line.selected_financial_account_id ?? file.financial_account_id;
     if (!accountId) {
       throw new Error("Despesas precisam de uma conta financeira.");
     }
-    finalAmount = -Math.abs(amount);
   }
 
   const { data: tx, error: txErr } = await supabase
@@ -721,16 +734,34 @@ export async function approveLine(
     throw createStageError("transactions_insert", txErr);
   }
 
-  const { error: lineErr } = await supabase
+  async function rollbackInsertedTransaction() {
+    const { error: rollbackError } = await supabase
+      .from("transactions")
+      .delete()
+      .eq("id", (tx as { id: string }).id);
+    if (rollbackError) console.error("Failed to rollback imported transaction", rollbackError);
+  }
+
+  const { data: updatedLine, error: lineErr } = await supabase
     .from("imported_transaction_lines")
     .update({
       review_status: "approved",
       generated_transaction_id: (tx as { id: string }).id,
     })
-    .eq("id", line.id);
+    .eq("id", line.id)
+    .eq("user_id", userId)
+    .eq("review_status", "pending")
+    .is("generated_transaction_id", null)
+    .select("id")
+    .maybeSingle();
   if (lineErr) {
     console.error("Supabase error", lineErr);
+    await rollbackInsertedTransaction();
     throw createStageError("line_status_update", lineErr);
+  }
+  if (!updatedLine) {
+    await rollbackInsertedTransaction();
+    throw new Error("Esta linha já foi aprovada em outra operação.");
   }
 
   if (invoiceId) await recalcInvoiceTotal(invoiceId);

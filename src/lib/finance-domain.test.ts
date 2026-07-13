@@ -5,6 +5,7 @@ import {
   computeInstallmentAmounts,
   computeInvoicePeriod,
   computeUsedCreditLimit,
+  deriveImportedApprovalPlan,
   deriveInvoiceAmounts,
   deriveInvoiceStatus,
   isGenericDescription,
@@ -31,7 +32,8 @@ test("characterizes real Nubank invoice descriptions", () => {
   const cases = [
     ["Pagamento recebido", -1_250, "credit_card_payment", "transfer"],
     ["Crédito em fatura", -25, "invoice_credit", "transfer"],
-    ["Estorno de compra - AMAZON", -79.9, "refund", "transfer"],
+    ["Estorno de compra - AMAZON", -79.9, "invoice_credit", "transfer"],
+    ["Reembolso de compra", -45, "refund", "transfer"],
     ["Crédito de Cashback", -12.5, "cashback", "transfer"],
     ["Juros de atraso", 8.42, "financial_charge", "expense"],
     ["IOF de financiamento", 1.23, "financial_charge", "expense"],
@@ -223,4 +225,95 @@ test("approval validation uses the central classification and keeps review audit
     destinationAccountId: null,
   });
   assert.match(ambiguousCredit ?? "", /escolha o tipo/i);
+});
+
+test("maps bank approvals to income, expense and auditable transfers", () => {
+  const bankPlan = (
+    description: string,
+    amount: number,
+    selectedType: "income" | "expense" | "transfer" | null = null,
+  ) =>
+    deriveImportedApprovalPlan({
+      classification: classifyImportedTransaction({
+        description,
+        amount,
+        context: "bank_account",
+      }),
+      context: "bank_account",
+      amount,
+      selectedType,
+    });
+
+  assert.deepEqual(bankPlan("Salário", 5000), {
+    type: "income",
+    amount: 5000,
+    movementType: null,
+    isInvoiceMovement: false,
+    requiresFinancialAccount: true,
+    requiresDestinationAccount: false,
+    requiresCreditCard: false,
+    affectsIncomeExpense: true,
+  });
+  assert.equal(bankPlan("Supermercado", -100)?.type, "expense");
+  assert.deepEqual(
+    {
+      type: bankPlan("Pix enviado", -100)?.type,
+      destination: bankPlan("Pix enviado", -100)?.requiresDestinationAccount,
+      affectsIncomeExpense: bankPlan("Pix enviado", -100)?.affectsIncomeExpense,
+    },
+    { type: "transfer", destination: true, affectsIncomeExpense: false },
+  );
+});
+
+test("maps each special card movement to its persisted type and metadata kind", () => {
+  const cardPlan = (description: string, amount: number) => {
+    const classification = classifyImportedTransaction({
+      description,
+      amount,
+      context: "credit_card",
+    });
+    return deriveImportedApprovalPlan({
+      classification,
+      context: "credit_card",
+      amount,
+      selectedType: null,
+    });
+  };
+
+  const cases = [
+    ["Compra Nubank", 100, "credit_card_purchase", null, false],
+    ["Juros de atraso", 10, "credit_card_purchase", "financial_charge", false],
+    ["Saldo anterior", 200, "credit_card_purchase", "previous_balance", false],
+    ["Pagamento recebido", -300, "transfer", "credit_card_payment", true],
+    ["Estorno de compra", -50, "transfer", "invoice_credit", false],
+    ["Crédito em fatura", -25, "transfer", "invoice_credit", false],
+    ["Reembolso", -40, "transfer", "refund", false],
+    ["Cashback", -12, "transfer", "cashback", false],
+  ] as const;
+
+  for (const [description, amount, type, movementType, requiresAccount] of cases) {
+    const actual = cardPlan(description, amount);
+    assert.equal(actual?.type, type, description);
+    assert.equal(actual?.movementType, movementType, description);
+    assert.equal(actual?.requiresFinancialAccount, requiresAccount, description);
+  }
+});
+
+test("invoice credits validate without a bank account while payments still require one", () => {
+  const base = {
+    date: "2026-07-10",
+    amount: -50,
+    context: "credit_card" as const,
+    selectedType: null,
+    financialAccountId: null,
+    creditCardId: "card-1",
+    destinationAccountId: null,
+  };
+  for (const description of ["Estorno de compra", "Crédito em fatura", "Reembolso", "Cashback"]) {
+    assert.equal(validateImportedLineForApproval({ ...base, description }), null, description);
+  }
+  assert.match(
+    validateImportedLineForApproval({ ...base, description: "Pagamento recebido" }) ?? "",
+    /selecione a conta/i,
+  );
 });

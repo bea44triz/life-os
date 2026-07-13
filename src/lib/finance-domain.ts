@@ -42,9 +42,15 @@ const CREDIT_CARD_PAYMENT_TERMS = [
   "debito automatico fatura",
 ];
 
-const INVOICE_CREDIT_TERMS = ["credito em fatura", "credito na fatura", "ajuste a credito"];
+const INVOICE_CREDIT_TERMS = [
+  "credito em fatura",
+  "credito na fatura",
+  "ajuste a credito",
+  "estorno",
+  "compra cancelada",
+];
 
-const REFUND_TERMS = ["estorno", "reembolso", "compra cancelada"];
+const REFUND_TERMS = ["reembolso"];
 const CASHBACK_TERMS = ["cashback", "dinheiro de volta"];
 const PREVIOUS_BALANCE_TERMS = [
   "valor pendente do mes anterior",
@@ -152,13 +158,97 @@ export function classifyImportedTransaction(input: {
   };
 }
 
-export function isInvoiceCreditMovement(kind: ImportedTransactionKind): boolean {
+export type InvoiceCreditMovementType =
+  "credit_card_payment" | "invoice_credit" | "refund" | "cashback";
+
+export function isInvoiceCreditMovement(
+  kind: ImportedTransactionKind,
+): kind is InvoiceCreditMovementType {
   return (
     kind === "credit_card_payment" ||
     kind === "invoice_credit" ||
     kind === "refund" ||
     kind === "cashback"
   );
+}
+
+export type PersistedTransactionType = "income" | "expense" | "transfer" | "credit_card_purchase";
+
+export type InvoiceMovementType =
+  InvoiceCreditMovementType | "financial_charge" | "previous_balance";
+
+export type ImportedApprovalPlan = {
+  type: PersistedTransactionType;
+  amount: number;
+  movementType: InvoiceMovementType | null;
+  isInvoiceMovement: boolean;
+  requiresFinancialAccount: boolean;
+  requiresDestinationAccount: boolean;
+  requiresCreditCard: boolean;
+  affectsIncomeExpense: boolean;
+};
+
+export function deriveImportedApprovalPlan(input: {
+  classification: ImportedTransactionClassification;
+  context: ImportContext;
+  amount: number;
+  selectedType: SuggestedTransactionType | null;
+}): ImportedApprovalPlan | null {
+  const absoluteAmount = Math.abs(input.amount);
+  const facingType = input.selectedType ?? input.classification.suggestedType;
+
+  if (input.context === "credit_card") {
+    const kind = input.classification.kind;
+    if (kind === "financial_charge" || kind === "previous_balance") {
+      return {
+        type: "credit_card_purchase",
+        amount: -absoluteAmount,
+        movementType: kind,
+        isInvoiceMovement: true,
+        requiresFinancialAccount: false,
+        requiresDestinationAccount: false,
+        requiresCreditCard: true,
+        affectsIncomeExpense: true,
+      };
+    }
+    if (isInvoiceCreditMovement(kind)) {
+      return {
+        type: "transfer",
+        amount: -absoluteAmount,
+        movementType: kind,
+        isInvoiceMovement: true,
+        requiresFinancialAccount: kind === "credit_card_payment",
+        requiresDestinationAccount: false,
+        requiresCreditCard: true,
+        affectsIncomeExpense: false,
+      };
+    }
+    if (!facingType) return null;
+    if (facingType === "expense") {
+      return {
+        type: "credit_card_purchase",
+        amount: -absoluteAmount,
+        movementType: null,
+        isInvoiceMovement: true,
+        requiresFinancialAccount: false,
+        requiresDestinationAccount: false,
+        requiresCreditCard: true,
+        affectsIncomeExpense: true,
+      };
+    }
+  }
+
+  if (!facingType) return null;
+  return {
+    type: facingType,
+    amount: facingType === "income" ? absoluteAmount : -absoluteAmount,
+    movementType: null,
+    isInvoiceMovement: false,
+    requiresFinancialAccount: true,
+    requiresDestinationAccount: facingType === "transfer",
+    requiresCreditCard: false,
+    affectsIncomeExpense: facingType !== "transfer",
+  };
 }
 
 export function readImportedLineSelection(
@@ -201,29 +291,32 @@ export function validateImportedLineForApproval(input: {
     amount: input.amount,
     context: input.context,
   });
-  const type = input.selectedType ?? classification.suggestedType;
-  if (!type) return "Escolha o tipo de lançamento antes de aprovar.";
-
-  if (type === "transfer") {
-    if (isInvoiceCreditMovement(classification.kind)) {
-      return input.financialAccountId
-        ? null
-        : "Para registrar o pagamento da fatura, selecione a conta de onde saiu o dinheiro.";
+  const plan = deriveImportedApprovalPlan({
+    classification,
+    context: input.context,
+    amount: input.amount,
+    selectedType: input.selectedType,
+  });
+  if (!plan) return "Escolha o tipo de lançamento antes de aprovar.";
+  if (plan.requiresCreditCard && !input.creditCardId) {
+    return plan.type === "credit_card_purchase"
+      ? "Compras no cartão precisam estar vinculadas a um cartão."
+      : "Movimentos da fatura precisam estar vinculados a um cartão.";
+  }
+  if (plan.requiresFinancialAccount && !input.financialAccountId) {
+    if (plan.movementType === "credit_card_payment") {
+      return "Para registrar o pagamento da fatura, selecione a conta de onde saiu o dinheiro.";
     }
-    if (!input.financialAccountId || !input.destinationAccountId) {
+    if (plan.type === "transfer") {
       return "Para transferências, selecione a conta de origem e a conta de destino.";
     }
-    if (input.financialAccountId === input.destinationAccountId) {
-      return "A conta de origem e destino precisam ser diferentes.";
-    }
-    return null;
+    return `${plan.type === "income" ? "Receita" : "Despesa"} precisa de uma conta financeira.`;
   }
-
-  if (type === "expense" && input.context === "credit_card") {
-    return input.creditCardId ? null : "Compras no cartão precisam estar vinculadas a um cartão.";
+  if (plan.requiresDestinationAccount && !input.destinationAccountId) {
+    return "Para transferências, selecione a conta de origem e a conta de destino.";
   }
-  if (!input.financialAccountId) {
-    return `${type === "income" ? "Receita" : "Despesa"} precisa de uma conta financeira.`;
+  if (plan.requiresDestinationAccount && input.financialAccountId === input.destinationAccountId) {
+    return "A conta de origem e destino precisam ser diferentes.";
   }
   return null;
 }
