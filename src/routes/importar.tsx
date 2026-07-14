@@ -54,6 +54,7 @@ import {
   isInvoiceCreditMovement,
   readImportedLineSelection,
   validateImportedLineForApproval,
+  type ImportedTransactionKind,
   type SuggestedTransactionType,
 } from "@/lib/finance-domain";
 import { computeInvoicePeriod, type CreditCardInvoice } from "@/lib/credit-cards";
@@ -782,11 +783,30 @@ function LineRow({
   const { selectedType: persistedType, destinationAccountId: persistedDest, meta } =
     readLineMeta(line);
   const amountNum = Number(line.extracted_amount ?? 0);
-  const classification = classifyImportedTransaction({
+  const systemClassification = classifyImportedTransaction({
     description: line.extracted_description,
     amount: amountNum,
     context: file.file_context,
   });
+  const historyKinds: readonly ImportedTransactionKind[] = [
+    "standard",
+    "bank_transfer",
+    "credit_card_payment",
+    "invoice_credit",
+    "refund",
+    "cashback",
+    "financial_charge",
+    "previous_balance",
+  ];
+  const historyKind =
+    meta.suggestion_source === "user_history" &&
+    typeof meta.classification_kind === "string" &&
+    historyKinds.includes(meta.classification_kind as ImportedTransactionKind)
+      ? (meta.classification_kind as ImportedTransactionKind)
+      : null;
+  const classification = historyKind
+    ? { ...systemClassification, kind: historyKind, requiresReview: false }
+    : systemClassification;
   const suggested = classification.suggestedType;
   const currentType: LineType | "" = persistedType ?? suggested ?? "";
   const isSuggestion = !persistedType && suggested !== null;
@@ -858,7 +878,17 @@ function LineRow({
 
   async function handleTypeChange(next: LineType) {
     try {
-      await persistMeta({ user_selected_type: next, selected_type: next });
+      await persistMeta({
+        user_selected_type: next,
+        selected_type: next,
+        ...(meta.suggestion_source === "user_history"
+          ? {
+              suggestion_source: "user_override",
+              classification_kind: systemClassification.kind,
+              movement_type: null,
+            }
+          : {}),
+      });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Erro ao salvar tipo.");
     }
@@ -878,6 +908,13 @@ function LineRow({
         ...meta,
         user_selected_type: editType || null,
         selected_type: editType || null,
+        ...(meta.suggestion_source === "user_history" && editType !== persistedType
+          ? {
+              suggestion_source: "user_override",
+              classification_kind: systemClassification.kind,
+              movement_type: null,
+            }
+          : {}),
         destination_account_id:
           editType === "transfer" ? destAccountId || null : meta.destination_account_id ?? null,
       };
@@ -929,7 +966,9 @@ function LineRow({
     selectedType: editType || null,
   });
   const needsReview =
-    isPending && !persistedType && classification.requiresReview;
+    isPending &&
+    meta.suggestion_source !== "user_history" &&
+    (meta.requires_review === true || (!persistedType && classification.requiresReview));
   const effectiveInvoiceId = invoiceId || defaultInvoiceId || "";
   const targetInvoice = invoices.find((invoice) => invoice.id === effectiveInvoiceId);
   const invoiceOptions = invoices.filter(
@@ -943,6 +982,8 @@ function LineRow({
         : "bg-secondary text-muted-foreground";
   const suggestionSource =
     typeof meta.suggestion_source === "string" ? meta.suggestion_source : null;
+  const historySuggested = suggestionSource === "user_history";
+  const keywordSuggested = suggestionSource === "system_keyword";
   const confidence =
     typeof meta.suggestion_confidence === "number" ? meta.suggestion_confidence : null;
   const trnType = typeof meta.trntype === "string" ? meta.trntype : null;
@@ -968,6 +1009,16 @@ function LineRow({
             <span className={cn("rounded-full px-2 py-0.5 text-[10px]", badgeTone)}>
               {presentation.badge}
             </span>
+            {historySuggested && (
+              <span className="rounded-full bg-sage/15 px-2 py-0.5 text-[10px] text-sage">
+                Sugerido pelo histórico
+              </span>
+            )}
+            {keywordSuggested && (
+              <span className="rounded-full bg-sky/15 px-2 py-0.5 text-[10px] text-sky">
+                Sugerido por palavra-chave
+              </span>
+            )}
             {needsReview && (
               <span className="rounded-full bg-gold-soft px-2 py-0.5 text-[10px] text-ink">
                 Precisa revisão
@@ -1031,7 +1082,7 @@ function LineRow({
 
           {(suggestionSource || confidence != null || trnType || fitId) && (
             <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-muted-foreground">
-              {suggestionSource && <span>Origem: {suggestionSource}</span>}
+              {suggestionSource === "amount_signal" && <span>Origem: sinal do valor</span>}
               {confidence != null && <span>Confiança: {Math.round(confidence * 100)}%</span>}
               {trnType && <span className="rounded-full bg-secondary px-2 py-0.5">OFX {trnType}</span>}
               {fitId && <span className="rounded-full bg-secondary px-2 py-0.5">FITID {fitId}</span>}

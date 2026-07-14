@@ -15,9 +15,17 @@ import {
   type ParsedLine,
 } from "./import-parsers";
 import {
+  applyHistoricalSuggestionToImportedLine,
+  buildClassificationSignature,
   classifyImportedTransaction,
   deriveImportedApprovalPlan,
+  findHistoricalSuggestion,
   readImportedLineSelection,
+  type ClassificationSignature,
+  type ImportedTransactionKind,
+  type InvoiceMovementType,
+  type PersistedTransactionType,
+  type SuggestedTransactionType,
 } from "./finance-domain";
 
 export type FileContext = "bank_account" | "credit_card";
@@ -199,6 +207,189 @@ async function findCategoryByName(
     return null;
   }
   return (data as { id: string } | null)?.id ?? null;
+}
+
+const IMPORTED_TRANSACTION_KINDS = new Set<ImportedTransactionKind>([
+  "standard",
+  "bank_transfer",
+  "credit_card_payment",
+  "invoice_credit",
+  "refund",
+  "cashback",
+  "financial_charge",
+  "previous_balance",
+]);
+
+const INVOICE_MOVEMENT_TYPES = new Set<InvoiceMovementType>([
+  "credit_card_payment",
+  "invoice_credit",
+  "refund",
+  "cashback",
+  "financial_charge",
+  "previous_balance",
+]);
+
+function readStoredClassificationSignature(
+  metadata: Record<string, unknown> | null,
+): ClassificationSignature | null {
+  const value = metadata?.classification_signature;
+  if (!value || typeof value !== "object") return null;
+  const signature = value as Partial<ClassificationSignature>;
+  if (
+    typeof signature.description_normalized !== "string" ||
+    (signature.file_context !== "bank_account" &&
+      signature.file_context !== "credit_card") ||
+    (signature.visual_type !== "income" &&
+      signature.visual_type !== "expense" &&
+      signature.visual_type !== "transfer") ||
+    (signature.transaction_type !== "income" &&
+      signature.transaction_type !== "expense" &&
+      signature.transaction_type !== "transfer" &&
+      signature.transaction_type !== "credit_card_purchase") ||
+    typeof signature.description_original !== "string" ||
+    !signature.classification_kind ||
+    !IMPORTED_TRANSACTION_KINDS.has(signature.classification_kind) ||
+    signature.suggestion_source !== "user_approved" ||
+    typeof signature.approved_at !== "string"
+  ) {
+    return null;
+  }
+  return signature as ClassificationSignature;
+}
+
+export async function loadRecentClassificationHistory(
+  userId: string,
+  limit = 250,
+): Promise<ClassificationSignature[]> {
+  const { data: lines, error: linesError } = await supabase
+    .from("imported_transaction_lines")
+    .select(
+      "imported_file_id, extracted_description, extracted_amount, selected_category_id, selected_subcategory_id, selected_project_id, selected_financial_account_id, selected_credit_card_id, selected_credit_card_invoice_id, generated_transaction_id, metadata, updated_at",
+    )
+    .eq("user_id", userId)
+    .eq("review_status", "approved")
+    .not("generated_transaction_id", "is", null)
+    .order("updated_at", { ascending: false })
+    .limit(limit);
+  if (linesError) throw linesError;
+
+  const approvedLines = (lines ?? []) as Array<{
+    imported_file_id: string;
+    extracted_description: string | null;
+    extracted_amount: number | null;
+    selected_category_id: string | null;
+    selected_subcategory_id: string | null;
+    selected_project_id: string | null;
+    selected_financial_account_id: string | null;
+    selected_credit_card_id: string | null;
+    selected_credit_card_invoice_id: string | null;
+    generated_transaction_id: string;
+    metadata: Record<string, unknown> | null;
+    updated_at: string;
+  }>;
+  const stored = approvedLines
+    .map((line) => readStoredClassificationSignature(line.metadata))
+    .filter((signature): signature is ClassificationSignature => signature !== null);
+
+  const missing = approvedLines.filter(
+    (line) => !readStoredClassificationSignature(line.metadata),
+  );
+  if (missing.length === 0) return stored;
+
+  const transactionIds = [...new Set(missing.map((line) => line.generated_transaction_id))];
+  const fileIds = [...new Set(missing.map((line) => line.imported_file_id))];
+  const [{ data: transactions, error: transactionsError }, { data: files, error: filesError }] =
+    await Promise.all([
+      supabase
+        .from("transactions")
+        .select(
+          "id, type, category_id, subcategory_id, project_id, financial_account_id, credit_card_id, credit_card_invoice_id, metadata",
+        )
+        .eq("user_id", userId)
+        .in("id", transactionIds),
+      supabase
+        .from("imported_files")
+        .select("id, file_context, financial_account_id, credit_card_id")
+        .eq("user_id", userId)
+        .in("id", fileIds),
+    ]);
+  if (transactionsError) throw transactionsError;
+  if (filesError) throw filesError;
+
+  const txById = new Map(
+    ((transactions ?? []) as Array<{
+      id: string;
+      type: PersistedTransactionType;
+      category_id: string | null;
+      subcategory_id: string | null;
+      project_id: string | null;
+      financial_account_id: string | null;
+      credit_card_id: string | null;
+      credit_card_invoice_id: string | null;
+      metadata: Record<string, unknown> | null;
+    }>).map((transaction) => [transaction.id, transaction]),
+  );
+  const fileById = new Map(
+    ((files ?? []) as Array<{
+      id: string;
+      file_context: FileContext;
+      financial_account_id: string | null;
+      credit_card_id: string | null;
+    }>).map((file) => [file.id, file]),
+  );
+
+  const derived = missing.flatMap((line) => {
+    const transaction = txById.get(line.generated_transaction_id);
+    const file = fileById.get(line.imported_file_id);
+    if (!transaction || !file) return [];
+    const rawMovement = transaction.metadata?.movement_type;
+    const movementType =
+      typeof rawMovement === "string" &&
+      INVOICE_MOVEMENT_TYPES.has(rawMovement as InvoiceMovementType)
+        ? (rawMovement as InvoiceMovementType)
+        : null;
+    const systemClassification = classifyImportedTransaction({
+      description: line.extracted_description,
+      amount: Number(line.extracted_amount ?? 0),
+      context: file.file_context,
+    });
+    const classificationKind = movementType ?? systemClassification.kind;
+    const visualType: SuggestedTransactionType =
+      transaction.type === "credit_card_purchase"
+        ? "expense"
+        : transaction.type;
+    const destinationAccountId =
+      typeof transaction.metadata?.destination_account_id === "string"
+        ? transaction.metadata.destination_account_id
+        : null;
+    return [
+      buildClassificationSignature({
+        description: line.extracted_description,
+        context: file.file_context,
+        visualType,
+        transactionType: transaction.type,
+        classificationKind,
+        movementType,
+        categoryId: transaction.category_id ?? line.selected_category_id,
+        subcategoryId: transaction.subcategory_id ?? line.selected_subcategory_id,
+        projectId: transaction.project_id ?? line.selected_project_id,
+        financialAccountId:
+          transaction.financial_account_id ??
+          line.selected_financial_account_id ??
+          file.financial_account_id,
+        destinationAccountId,
+        creditCardId:
+          transaction.credit_card_id ?? line.selected_credit_card_id ?? file.credit_card_id,
+        creditCardInvoiceId:
+          transaction.credit_card_invoice_id ?? line.selected_credit_card_invoice_id,
+        approvedAt: line.updated_at,
+      }),
+    ];
+  });
+
+  return [...stored, ...derived].sort((a, b) =>
+    b.approved_at.localeCompare(a.approved_at),
+  );
 }
 
 export async function startImport(
@@ -384,6 +575,14 @@ export async function startImport(
 
     if (parsed.length > 0) {
       const cache = new Map<string, string | null>();
+      let history: ClassificationSignature[] = [];
+      try {
+        history = await loadRecentClassificationHistory(userId);
+      } catch (historyError) {
+        // History is an optional suggestion layer. A read failure must not block
+        // the auditable import/review flow.
+        console.warn("IMPORT_HISTORY_UNAVAILABLE", historyError);
+      }
       const rows = [];
       for (const p of parsed) {
         const classification = classifyImportedTransaction({
@@ -391,15 +590,31 @@ export async function startImport(
           amount: Number(p.amount ?? 0),
           context: input.fileContext,
         });
+        const historicalSuggestion = findHistoricalSuggestion(history, {
+          description: p.description,
+          amount: Number(p.amount ?? 0),
+          context: input.fileContext,
+          financialAccountId:
+            input.fileContext === "bank_account" ? input.financialAccountId : null,
+          creditCardId: input.fileContext === "credit_card" ? input.creditCardId : null,
+        });
         let suggestedId: string | null = null;
-        const suggestName = suggestCategoryName(p.description ?? "");
-        if (suggestName) {
+        const suggestName = historicalSuggestion
+          ? null
+          : suggestCategoryName(p.description ?? "");
+        if (!historicalSuggestion && suggestName) {
           if (!cache.has(suggestName)) {
             cache.set(suggestName, await findCategoryByName(userId, suggestName));
           }
           suggestedId = cache.get(suggestName) ?? null;
         }
-        rows.push({
+        const fallbackSuggestionSource =
+          classification.requiresReview
+            ? "needs_review"
+            : classification.kind !== "standard" || !!suggestName
+              ? "system_keyword"
+              : "amount_signal";
+        const row = {
           user_id: userId,
           imported_file_id: fileId,
           raw_text: p.raw,
@@ -417,10 +632,15 @@ export async function startImport(
           metadata: {
             ...(p.meta ?? {}),
             classification_kind: classification.kind,
-            suggestion_source: "Regras financeiras centrais",
+            suggestion_source: fallbackSuggestionSource,
             requires_review: classification.requiresReview,
           },
-        });
+        };
+        rows.push(
+          historicalSuggestion
+            ? applyHistoricalSuggestionToImportedLine(row, historicalSuggestion)
+            : row,
+        );
       }
 
       stage = "imported_lines_insert";
@@ -612,11 +832,22 @@ async function approveLineUnlocked(
 
   const { selectedType: userType, destinationAccountId } =
     readImportedLineSelection(line.metadata);
-  const classification = classifyImportedTransaction({
+  const systemClassification = classifyImportedTransaction({
     description: line.extracted_description,
     amount,
     context: file.file_context,
   });
+  const learnedKind = line.metadata?.classification_kind;
+  const classification =
+    line.metadata?.suggestion_source === "user_history" &&
+    typeof learnedKind === "string" &&
+    IMPORTED_TRANSACTION_KINDS.has(learnedKind as ImportedTransactionKind)
+      ? {
+          kind: learnedKind as ImportedTransactionKind,
+          suggestedType: userType ?? systemClassification.suggestedType,
+          requiresReview: false,
+        }
+      : systemClassification;
 
   const plan = deriveImportedApprovalPlan({
     classification,
@@ -758,6 +989,24 @@ async function approveLineUnlocked(
     throw createStageError("transactions_insert", txErr);
   }
 
+  const finalVisualType: SuggestedTransactionType =
+    userType ?? (type === "credit_card_purchase" ? "expense" : type);
+  const classificationSignature = buildClassificationSignature({
+    description: line.extracted_description,
+    context: file.file_context,
+    visualType: finalVisualType,
+    transactionType: type,
+    classificationKind: classification.kind,
+    movementType: plan.movementType,
+    categoryId: line.selected_category_id,
+    subcategoryId: line.selected_subcategory_id,
+    projectId: line.selected_project_id,
+    financialAccountId: accountId,
+    destinationAccountId,
+    creditCardId: cardId,
+    creditCardInvoiceId: invoiceId,
+  });
+
   async function rollbackInsertedTransaction() {
     const { error: rollbackError } = await supabase
       .from("transactions")
@@ -771,6 +1020,10 @@ async function approveLineUnlocked(
     .update({
       review_status: "approved",
       generated_transaction_id: (tx as { id: string }).id,
+      metadata: {
+        ...(line.metadata ?? {}),
+        classification_signature: classificationSignature,
+      },
     })
     .eq("id", line.id)
     .eq("user_id", userId)
