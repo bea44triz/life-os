@@ -9,7 +9,6 @@ import {
   habits,
   insights,
   monthSummary,
-  projects,
   transactions,
   user,
   weekMood,
@@ -20,6 +19,7 @@ import {
   useCategories,
   useCreditCards,
   useInvoices,
+  useProjects,
   useTransactions,
 } from "@/lib/finance-hooks";
 import { bestPurchaseDay, computeInvoicePeriod } from "@/lib/credit-cards";
@@ -51,6 +51,7 @@ function Dashboard() {
   const live = useDashboardData();
   const { data: liveCards = [] } = useCreditCards();
   const { data: liveInvoices = [] } = useInvoices();
+  const { data: liveProjects = [] } = useProjects();
   const { data: liveTransactions = [] } = useTransactions();
   const { data: liveCategories = [] } = useCategories();
   const displayName =
@@ -58,7 +59,10 @@ function Dashboard() {
     authUser?.email?.split("@")[0] ??
     user.name;
   const useLive =
-    live.accountsCount > 0 || live.cardsCount > 0 || liveTransactions.length > 0;
+    live.accountsCount > 0 ||
+    live.cardsCount > 0 ||
+    live.projectsCount > 0 ||
+    liveTransactions.length > 0;
   const cardPreview = useMemo(() => {
     const card = liveCards[0];
     if (!card) {
@@ -303,45 +307,69 @@ function Dashboard() {
             </Link>
           }
         >
-          <div className="grid gap-4 md:grid-cols-3">
-            {projects.map((p) => {
-              const pct = p.goalAmount
-                ? Math.round(((p.savedAmount ?? 0) / p.goalAmount) * 100)
-                : (p.behavioralProgress ?? 0);
-              return (
-                <Link
-                  key={p.id}
-                  to="/projetos"
-                  className="card-soft block p-5 transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-lift)]"
+          {liveProjects.length ? (
+            <div className="grid gap-4 md:grid-cols-3">
+              {liveProjects.map((p) => {
+                const goalAmount = (p as any).goalAmount as number | undefined;
+                const savedAmount = (p as any).savedAmount as number | undefined;
+                const pct = goalAmount
+                  ? Math.round(((savedAmount ?? 0) / goalAmount) * 100)
+                  : ((p as any).behavioralProgress ?? 0);
+                const deadline = (p as any).deadline as string | undefined;
+                const emoji = (p as any).emoji ?? "📌";
+                return (
+                  <Link
+                    key={p.id}
+                    to="/projetos"
+                    className="card-soft block p-5 transition hover:-translate-y-0.5 hover:shadow-[var(--shadow-lift)]"
+                  >
+                    <div className="flex items-start justify-between">
+                      <span className="text-2xl">{emoji}</span>
+                      <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
+                        {deadline}
+                      </span>
+                    </div>
+                    <h3 className="mt-3 font-serif text-lg leading-tight">{p.name}</h3>
+                    <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
+                      {(p as any).description ?? "Sem descrição disponível"}
+                    </p>
+                    <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-sage to-sky"
+                        style={{ width: `${pct}%` }}
+                      />
+                    </div>
+                    <div className="mt-2 flex items-center justify-between text-xs">
+                      <span className="text-muted-foreground">
+                        {goalAmount
+                          ? `${brl(savedAmount ?? 0)} / ${brl(goalAmount)}`
+                          : ((p as any).behavioralGoal ?? "Meta não disponível")}
+                      </span>
+                      <span className="font-medium">{pct}%</span>
+                    </div>
+                  </Link>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="card-soft rounded-3xl border border-border/70 bg-surface p-6 text-center">
+              <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                Sem projetos ativos
+              </div>
+              <h3 className="mt-3 font-serif text-2xl">Nenhum projeto cadastrado</h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Crie um projeto para começar a conectar seus objetivos ao seu dinheiro.
+              </p>
+              <div className="mt-4">
+                <button
+                  disabled
+                  className="rounded-full bg-ink px-4 py-2.5 text-xs font-medium text-background opacity-70 cursor-not-allowed"
                 >
-                  <div className="flex items-start justify-between">
-                    <span className="text-2xl">{p.emoji}</span>
-                    <span className="text-[11px] uppercase tracking-wider text-muted-foreground">
-                      {p.deadline}
-                    </span>
-                  </div>
-                  <h3 className="mt-3 font-serif text-lg leading-tight">{p.name}</h3>
-                  <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">
-                    {p.description}
-                  </p>
-                  <div className="mt-4 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                    <div
-                      className="h-full rounded-full bg-gradient-to-r from-sage to-sky"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </div>
-                  <div className="mt-2 flex items-center justify-between text-xs">
-                    <span className="text-muted-foreground">
-                      {p.goalAmount
-                        ? `${brl(p.savedAmount ?? 0)} / ${brl(p.goalAmount)}`
-                        : p.behavioralGoal}
-                    </span>
-                    <span className="font-medium">{pct}%</span>
-                  </div>
-                </Link>
-              );
-            })}
-          </div>
+                  Criar projeto
+                </button>
+              </div>
+            </div>
+          )}
         </Section>
 
         {/* Habits + recent tx */}
