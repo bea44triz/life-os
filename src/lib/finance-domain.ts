@@ -137,6 +137,9 @@ const GENERIC_DESCRIPTIONS = new Set([
   "cartao",
   "nubank",
   "pix",
+  "pix recebido",
+  "pix enviado",
+  "transferencia",
   "ted",
   "doc",
   "outros",
@@ -235,6 +238,184 @@ export type PersistedTransactionType = "income" | "expense" | "transfer" | "cred
 
 export type InvoiceMovementType =
   InvoiceCreditMovementType | "financial_charge" | "previous_balance";
+
+export type ClassificationSignature = {
+  description_original: string;
+  description_normalized: string;
+  file_context: ImportContext;
+  visual_type: SuggestedTransactionType;
+  visual_type_label: "Receita" | "Despesa" | "Transferência";
+  transaction_type: PersistedTransactionType;
+  classification_kind: ImportedTransactionKind;
+  movement_type: InvoiceMovementType | null;
+  category_id: string | null;
+  subcategory_id: string | null;
+  project_id: string | null;
+  financial_account_id: string | null;
+  destination_account_id: string | null;
+  credit_card_id: string | null;
+  credit_card_invoice_id: string | null;
+  suggestion_source: "user_approved";
+  approved_at: string;
+};
+
+export type ClassificationSignatureInput = {
+  description: string | null | undefined;
+  context: ImportContext;
+  visualType: SuggestedTransactionType;
+  transactionType: PersistedTransactionType;
+  classificationKind: ImportedTransactionKind;
+  movementType?: InvoiceMovementType | null;
+  categoryId?: string | null;
+  subcategoryId?: string | null;
+  projectId?: string | null;
+  financialAccountId?: string | null;
+  destinationAccountId?: string | null;
+  creditCardId?: string | null;
+  creditCardInvoiceId?: string | null;
+  approvedAt?: string;
+};
+
+const VISUAL_TYPE_LABELS: Record<
+  SuggestedTransactionType,
+  ClassificationSignature["visual_type_label"]
+> = {
+  income: "Receita",
+  expense: "Despesa",
+  transfer: "Transferência",
+};
+
+export function buildClassificationSignature(
+  input: ClassificationSignatureInput,
+): ClassificationSignature {
+  const original = String(input.description ?? "").trim();
+  return {
+    description_original: original,
+    description_normalized: normalizeTransactionDescription(original),
+    file_context: input.context,
+    visual_type: input.visualType,
+    visual_type_label: VISUAL_TYPE_LABELS[input.visualType],
+    transaction_type: input.transactionType,
+    classification_kind: input.classificationKind,
+    movement_type: input.movementType ?? null,
+    category_id: input.categoryId ?? null,
+    subcategory_id: input.subcategoryId ?? null,
+    project_id: input.projectId ?? null,
+    financial_account_id: input.financialAccountId ?? null,
+    destination_account_id:
+      input.visualType === "transfer" ? (input.destinationAccountId ?? null) : null,
+    credit_card_id: input.creditCardId ?? null,
+    credit_card_invoice_id: input.creditCardInvoiceId ?? null,
+    suggestion_source: "user_approved",
+    approved_at: input.approvedAt ?? new Date().toISOString(),
+  };
+}
+
+export type HistoricalSuggestionInput = {
+  description: string | null | undefined;
+  context: ImportContext;
+  amount: number;
+  financialAccountId?: string | null;
+  creditCardId?: string | null;
+};
+
+function hasSameImportScope(
+  signature: ClassificationSignature,
+  input: HistoricalSuggestionInput,
+): boolean {
+  if (input.context === "bank_account") {
+    return (
+      !!input.financialAccountId && signature.financial_account_id === input.financialAccountId
+    );
+  }
+  return !!input.creditCardId && signature.credit_card_id === input.creditCardId;
+}
+
+export function isSafeHistoryMatch(
+  signature: ClassificationSignature,
+  input: HistoricalSuggestionInput,
+): boolean {
+  const normalized = normalizeTransactionDescription(input.description);
+  if (!normalized || signature.description_normalized !== normalized) return false;
+  if (signature.file_context !== input.context) return false;
+  if (!hasSameImportScope(signature, input)) return false;
+
+  const current = classifyImportedTransaction({
+    description: input.description,
+    amount: input.amount,
+    context: input.context,
+  });
+  if (!isGenericDescription(normalized)) return true;
+
+  // Generic labels are only reusable when account/card and the special movement
+  // pattern agree. Plain "PAGAMENTO", "TED" or "DOC" remains manual review.
+  return (
+    current.kind !== "standard" &&
+    signature.classification_kind === current.kind &&
+    signature.movement_type ===
+      (isInvoiceCreditMovement(current.kind) ||
+      current.kind === "financial_charge" ||
+      current.kind === "previous_balance"
+        ? current.kind
+        : null)
+  );
+}
+
+export function findHistoricalSuggestion(
+  history: readonly ClassificationSignature[],
+  input: HistoricalSuggestionInput,
+): ClassificationSignature | null {
+  return history.find((signature) => isSafeHistoryMatch(signature, input)) ?? null;
+}
+
+export type HistoryApplicableImportedLine = {
+  review_status: string;
+  selected_category_id: string | null;
+  selected_subcategory_id?: string | null;
+  selected_project_id: string | null;
+  selected_financial_account_id: string | null;
+  selected_credit_card_id: string | null;
+  selected_credit_card_invoice_id?: string | null;
+  metadata: Record<string, unknown> | null;
+};
+
+export function applyHistoricalSuggestionToImportedLine<T extends HistoryApplicableImportedLine>(
+  line: T,
+  suggestion: ClassificationSignature,
+): T {
+  return {
+    ...line,
+    review_status: "pending",
+    selected_category_id: suggestion.category_id,
+    selected_subcategory_id: suggestion.subcategory_id,
+    selected_project_id: suggestion.project_id,
+    selected_financial_account_id:
+      suggestion.file_context === "bank_account"
+        ? suggestion.financial_account_id
+        : line.selected_financial_account_id,
+    selected_credit_card_id:
+      suggestion.file_context === "credit_card"
+        ? suggestion.credit_card_id
+        : line.selected_credit_card_id,
+    // An invoice is period-specific. Keep the new import's destination unresolved
+    // so the existing due-date/date logic selects the current invoice.
+    selected_credit_card_invoice_id: line.selected_credit_card_invoice_id ?? null,
+    metadata: {
+      ...(line.metadata ?? {}),
+      selected_type: suggestion.visual_type,
+      suggested_transaction_type: suggestion.transaction_type,
+      classification_kind: suggestion.classification_kind,
+      movement_type: suggestion.movement_type,
+      destination_account_id:
+        suggestion.visual_type === "transfer" ? suggestion.destination_account_id : null,
+      suggestion_source: "user_history",
+      confidence: "high",
+      suggestion_confidence: 1,
+      requires_review: false,
+      history_signature_approved_at: suggestion.approved_at,
+    },
+  };
+}
 
 export type ImportedApprovalPlan = {
   type: PersistedTransactionType;
