@@ -3,15 +3,23 @@ import { useAuth } from "./auth-context";
 import {
   createAccount,
   createCategory,
+  createHabit,
   createTransaction,
+  deleteHabit,
   deleteTransaction,
   listAccounts,
   listCategories,
   listCreditCards,
+  listHabitLogs,
+  listHabits,
   listProjects,
   listSubcategories,
   listTransactions,
+  markHabitCompleted,
+  undoHabitCompletion,
+  updateHabit,
   updateTransaction,
+  type HabitInput,
   type TxInput,
 } from "./finance-api";
 import {
@@ -74,6 +82,24 @@ export function useProjects() {
   return useQuery({
     queryKey: ["projects", user?.id],
     queryFn: () => listProjects(user!.id),
+    enabled: !!user,
+  });
+}
+
+export function useHabits() {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["habits", user?.id],
+    queryFn: () => listHabits(user!.id),
+    enabled: !!user,
+  });
+}
+
+export function useHabitLogs() {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["habit_logs", user?.id],
+    queryFn: () => listHabitLogs(user!.id),
     enabled: !!user,
   });
 }
@@ -179,5 +205,64 @@ export function useCreateCategory() {
   return useMutation({
     mutationFn: (name: string) => createCategory(user!.id, name),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["categories", user?.id] }),
+  });
+}
+
+export function useCreateHabit() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: HabitInput) => createHabit(user!.id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["habits", user?.id] });
+      qc.invalidateQueries({ queryKey: ["dashboard", user?.id] });
+    },
+  });
+}
+
+export function useUpdateHabit() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Partial<HabitInput> }) =>
+      updateHabit(id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["habits", user?.id] });
+    },
+  });
+}
+
+export function useDeleteHabit() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: (id: string) => deleteHabit(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["habits", user?.id] });
+    },
+  });
+}
+
+export function useMarkHabitCompleted() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: (habitId: string) => markHabitCompleted(user!.id, habitId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["habit_logs", user?.id] });
+      qc.invalidateQueries({ queryKey: ["habits", user?.id] });
+    },
+  });
+}
+
+export function useUndoHabitCompletion() {
+  const qc = useQueryClient();
+  const { user } = useAuth();
+  return useMutation({
+    mutationFn: (habitId: string) => undoHabitCompletion(user!.id, habitId),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["habit_logs", user?.id] });
+      qc.invalidateQueries({ queryKey: ["habits", user?.id] });
+    },
   });
 }

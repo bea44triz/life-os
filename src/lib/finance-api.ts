@@ -86,6 +86,31 @@ export type Project = {
   status: string | null;
 };
 
+export type Habit = {
+  id: string;
+  user_id: string;
+  name: string;
+  description: string | null;
+  frequency: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type HabitInput = {
+  name: string;
+  description?: string | null;
+  frequency?: string | null;
+};
+
+export type HabitLog = {
+  id: string;
+  habit_id: string;
+  user_id: string;
+  completed: boolean | null;
+  created_at: string;
+  updated_at: string;
+};
+
 export type TxInput = {
   type: TxType;
   description: string;
@@ -293,6 +318,107 @@ export async function listCreditCards(userId: string): Promise<CreditCard[]> {
     .order("name");
   if (error) throw error;
   return (data ?? []) as CreditCard[];
+}
+
+export async function listHabits(userId: string): Promise<Habit[]> {
+  const { data, error } = await supabase
+    .from("habits")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as Habit[];
+}
+
+export async function createHabit(userId: string, input: HabitInput): Promise<Habit> {
+  const payload = {
+    user_id: userId,
+    name: input.name,
+    description: input.description ?? null,
+    frequency: input.frequency ?? "diária",
+  };
+  const { data, error } = await supabase
+    .from("habits")
+    .insert(payload)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Habit;
+}
+
+export async function updateHabit(id: string, input: Partial<HabitInput>): Promise<Habit> {
+  const { data, error } = await supabase
+    .from("habits")
+    .update(input)
+    .eq("id", id)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Habit;
+}
+
+export async function deleteHabit(id: string) {
+  const { error } = await supabase.from("habits").delete().eq("id", id);
+  if (error) throw error;
+}
+
+export async function listHabitLogs(userId: string): Promise<HabitLog[]> {
+  const { data, error } = await supabase
+    .from("habit_logs")
+    .select("*")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as HabitLog[];
+}
+
+function isSameDay(value: string, compareDate = new Date()) {
+  const date = new Date(value);
+  return (
+    date.getFullYear() === compareDate.getFullYear() &&
+    date.getMonth() === compareDate.getMonth() &&
+    date.getDate() === compareDate.getDate()
+  );
+}
+
+export async function markHabitCompleted(userId: string, habitId: string): Promise<HabitLog> {
+  const { data: existing, error: existingError } = await supabase
+    .from("habit_logs")
+    .select("*")
+    .eq("user_id", userId)
+    .eq("habit_id", habitId)
+    .order("created_at", { ascending: false });
+  if (existingError) throw existingError;
+
+  const todayEntry = (existing ?? []).find((entry) => entry.completed && isSameDay(entry.created_at));
+  if (todayEntry) return todayEntry as HabitLog;
+
+  const { data, error } = await supabase
+    .from("habit_logs")
+    .insert({ user_id: userId, habit_id: habitId, completed: true })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as HabitLog;
+}
+
+export async function undoHabitCompletion(userId: string, habitId: string) {
+  const { data, error } = await supabase
+    .from("habit_logs")
+    .select("id, created_at, completed")
+    .eq("user_id", userId)
+    .eq("habit_id", habitId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+
+  const idsToDelete = (data ?? [])
+    .filter((entry) => entry.completed !== false && isSameDay(entry.created_at))
+    .map((entry) => entry.id);
+
+  if (idsToDelete.length === 0) return;
+
+  const { error: deleteError } = await supabase.from("habit_logs").delete().in("id", idsToDelete);
+  if (deleteError) throw deleteError;
 }
 
 export async function listProjects(userId: string): Promise<Project[]> {
