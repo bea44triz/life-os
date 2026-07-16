@@ -1,8 +1,11 @@
 import { Sparkles, ArrowRight } from "lucide-react";
-import type { Insight } from "@/lib/mockData";
+import type { MentorInsightPresentation } from "@/lib/mentor-insights";
 import { cn } from "@/lib/utils";
 
-const toneStyles: Record<Insight["tone"], { bg: string; ring: string; chip: string }> = {
+const toneStyles: Record<
+  MentorInsightPresentation["tone"],
+  { bg: string; ring: string; chip: string }
+> = {
   sage: { bg: "bg-sage-soft", ring: "ring-sage/20", chip: "bg-sage text-background" },
   sky: { bg: "bg-sky-soft", ring: "ring-sky/20", chip: "bg-sky text-background" },
   gold: { bg: "bg-gold-soft", ring: "ring-gold/30", chip: "bg-gold text-ink" },
@@ -20,7 +23,7 @@ export function InsightCard({
   insight,
   featured = false,
 }: {
-  insight: Insight;
+  insight: MentorInsightPresentation;
   featured?: boolean;
 }) {
   const t = toneStyles[insight.tone];
