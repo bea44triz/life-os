@@ -4,23 +4,32 @@ import {
   createAccount,
   createCategory,
   createHabit,
+  createJournalEntry,
   createTransaction,
+  createWellbeingLog,
   deleteHabit,
+  deleteJournalEntry,
   deleteTransaction,
+  deleteWellbeingLog,
   listAccounts,
   listCategories,
   listCreditCards,
   listHabitLogs,
   listHabits,
+  listJournalEntries,
   listProjects,
+  listRecentJournalEntries,
   listSubcategories,
   listTransactions,
+  listWellbeingLogs,
   markHabitCompleted,
   undoHabitCompletion,
   updateHabit,
   updateTransaction,
   type HabitInput,
+  type JournalEntryInput,
   type TxInput,
+  type WellbeingLogInput,
 } from "./finance-api";
 import {
   createCardPurchase,
@@ -100,6 +109,33 @@ export function useHabitLogs() {
   return useQuery({
     queryKey: ["habit_logs", user?.id],
     queryFn: () => listHabitLogs(user!.id),
+    enabled: !!user,
+  });
+}
+
+export function useJournalEntries() {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["journal_entries", user?.id],
+    queryFn: () => listJournalEntries(user!.id),
+    enabled: !!user,
+  });
+}
+
+export function useRecentJournalEntries(limit = 5) {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["journal_entries", user?.id, "recent", limit],
+    queryFn: () => listRecentJournalEntries(user!.id, limit),
+    enabled: !!user,
+  });
+}
+
+export function useWellbeingLogs() {
+  const { user } = useAuth();
+  return useQuery({
+    queryKey: ["wellbeing_logs", user?.id],
+    queryFn: () => listWellbeingLogs(user!.id),
     enabled: !!user,
   });
 }
@@ -264,5 +300,41 @@ export function useUndoHabitCompletion() {
       qc.invalidateQueries({ queryKey: ["habit_logs", user?.id] });
       qc.invalidateQueries({ queryKey: ["habits", user?.id] });
     },
+  });
+}
+
+export function useCreateJournalEntry() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: JournalEntryInput) => createJournalEntry(user!.id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["journal_entries", user?.id] }),
+  });
+}
+
+export function useDeleteJournalEntry() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteJournalEntry(user!.id, id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["journal_entries", user?.id] }),
+  });
+}
+
+export function useCreateWellbeingLog() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: WellbeingLogInput) => createWellbeingLog(user!.id, input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["wellbeing_logs", user?.id] }),
+  });
+}
+
+export function useDeleteWellbeingLog() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteWellbeingLog(user!.id, id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["wellbeing_logs", user?.id] }),
   });
 }

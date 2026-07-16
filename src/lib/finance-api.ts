@@ -111,6 +111,38 @@ export type HabitLog = {
   updated_at: string;
 };
 
+export type JournalEntry = {
+  id: string;
+  user_id: string;
+  mood: number;
+  energy: number;
+  anxiety: number;
+  gratitude: string | null;
+  content: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type JournalEntryInput = {
+  mood: number;
+  energy: number;
+  anxiety: number;
+  gratitude?: string | null;
+  content: string;
+};
+
+export type WellbeingLog = {
+  id: string;
+  user_id: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WellbeingLogInput = {
+  notes: string;
+};
+
 export type TxInput = {
   type: TxType;
   description: string;
@@ -140,6 +172,88 @@ export async function listTransactions(userId: string): Promise<Transaction[]> {
     .order("created_at", { ascending: false });
   if (error) throw error;
   return (data ?? []) as Transaction[];
+}
+
+export async function listJournalEntries(userId: string): Promise<JournalEntry[]> {
+  const { data, error } = await supabase
+    .from("journal_entries")
+    .select("id, user_id, mood, energy, anxiety, gratitude, content, created_at, updated_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as JournalEntry[];
+}
+
+export async function listRecentJournalEntries(userId: string, limit = 5): Promise<JournalEntry[]> {
+  const { data, error } = await supabase
+    .from("journal_entries")
+    .select("id, user_id, mood, energy, anxiety, gratitude, content, created_at, updated_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as JournalEntry[];
+}
+
+export async function createJournalEntry(
+  userId: string,
+  input: JournalEntryInput,
+): Promise<JournalEntry> {
+  const { data, error } = await supabase
+    .from("journal_entries")
+    .insert({
+      user_id: userId,
+      mood: input.mood,
+      energy: input.energy,
+      anxiety: input.anxiety,
+      gratitude: input.gratitude ?? null,
+      content: input.content,
+    })
+    .select("id, user_id, mood, energy, anxiety, gratitude, content, created_at, updated_at")
+    .single();
+  if (error) throw error;
+  return data as JournalEntry;
+}
+
+export async function deleteJournalEntry(userId: string, id: string) {
+  const { error } = await supabase
+    .from("journal_entries")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
+}
+
+export async function listWellbeingLogs(userId: string): Promise<WellbeingLog[]> {
+  const { data, error } = await supabase
+    .from("wellbeing_logs")
+    .select("id, user_id, notes, created_at, updated_at")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as WellbeingLog[];
+}
+
+export async function createWellbeingLog(
+  userId: string,
+  input: WellbeingLogInput,
+): Promise<WellbeingLog> {
+  const { data, error } = await supabase
+    .from("wellbeing_logs")
+    .insert({ user_id: userId, notes: input.notes })
+    .select("id, user_id, notes, created_at, updated_at")
+    .single();
+  if (error) throw error;
+  return data as WellbeingLog;
+}
+
+export async function deleteWellbeingLog(userId: string, id: string) {
+  const { error } = await supabase
+    .from("wellbeing_logs")
+    .delete()
+    .eq("id", id)
+    .eq("user_id", userId);
+  if (error) throw error;
 }
 
 export async function createTransaction(userId: string, input: TxInput) {
