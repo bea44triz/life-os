@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import {
   AlertCircle,
@@ -12,7 +12,6 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { PageBody, PageHeader, Section, StatCard, brl } from "@/components/ui-bits";
-import { creditCards as mockCards, monthSummary, transactions as mockTx } from "@/lib/mockData";
 import {
   useAccounts,
   useCategories,
@@ -148,7 +147,7 @@ function Financeiro() {
   }
 
   const useLive = dashboard.accountsCount > 0 || dashboard.cardsCount > 0 || hasReal;
-  const balance = useLive ? dashboard.balance : mockTx.reduce((a, b) => a + 0, 0);
+  const balance = dashboard.balance;
 
   return (
     <>
@@ -183,12 +182,12 @@ function Financeiro() {
           />
           <StatCard
             label="Receitas do mês"
-            value={brl(useLive ? dashboard.income : monthSummary.income)}
+            value={brl(useLive ? dashboard.income : 0)}
             tone="sage"
           />
           <StatCard
             label="Despesas do mês"
-            value={brl(useLive ? dashboard.expenses : monthSummary.expenses)}
+            value={brl(useLive ? dashboard.expenses : 0)}
           />
           <StatCard
             label="Movimentações"
@@ -413,65 +412,51 @@ function Financeiro() {
         {!hasReal && cards.length === 0 && (
           <Section
             title="Cartões de crédito"
-            subtitle="Enquanto você não cadastra os seus, mostramos exemplos para você visualizar."
+            subtitle="Ainda não há cartões cadastrados para mostrar."
             action={
-              <a
-                href="/cartoes"
+              <Link
+                to="/cartoes"
                 className="rounded-full border border-border bg-surface px-3 py-1.5 text-xs hover:bg-secondary"
               >
                 Ir para Cartões
-              </a>
+              </Link>
             }
           >
-            <div className="grid gap-5 md:grid-cols-2">
-              {mockCards.map((c) => {
-                const pct = (c.used / c.limit) * 100;
-                return (
-                  <div key={c.id} className="card-soft overflow-hidden opacity-70">
-                    <div className="p-5 text-background" style={{ background: c.color }}>
-                      <div className="flex items-start justify-between">
-                        <div>
-                          <div className="text-[11px] uppercase tracking-wider opacity-80">
-                            {c.brand}
-                          </div>
-                          <div className="mt-1 font-serif text-2xl">{c.name}</div>
-                        </div>
-                        <div className="text-right text-xs opacity-80">
-                          Fecha {String(c.closingDay).padStart(2, "0")}
-                          <br />
-                          Vence {String(c.dueDay).padStart(2, "0")}
-                        </div>
-                      </div>
-                      <div className="mt-6">
-                        <div className="text-xs opacity-80">Fatura atual (exemplo)</div>
-                        <div className="font-serif text-3xl">{brl(c.used)}</div>
-                      </div>
-                      <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-white/20">
-                        <div className="h-full rounded-full bg-white/80" style={{ width: `${pct}%` }} />
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
+            <div className="card-soft border border-dashed border-border/70 bg-surface-soft p-6 text-center">
+              <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                Sem cartões ainda
+              </div>
+              <h3 className="mt-2 font-serif text-xl">
+                O resumo dos seus cartões aparecerá aqui quando houver um cadastro real.
+              </h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Você pode começar por uma conta e um lançamento manual.
+              </p>
             </div>
           </Section>
         )}
 
         <Section
           title="Importar extrato"
-          subtitle="Em breve: TXT, CSV ou PDF. Nada será salvo sem sua revisão."
+          subtitle="Você também pode importar extratos em OFX/CSV/TXT/PDF/XLSX pela área de Importação."
         >
           <div className="grid gap-5 lg:grid-cols-[1.2fr_1fr]">
-            <div className="card-soft flex flex-col items-center justify-center gap-3 border-2 border-dashed border-border bg-surface-soft p-10 text-center opacity-70">
+            <div className="card-soft flex flex-col items-center justify-center gap-3 border-2 border-dashed border-border bg-surface-soft p-10 text-center">
               <div className="grid h-12 w-12 place-items-center rounded-full bg-surface shadow-soft">
                 <Upload className="h-5 w-5" />
               </div>
               <div>
-                <div className="font-serif text-lg">Importação chega em breve</div>
+                <div className="font-serif text-lg">Importação disponível na área própria</div>
                 <div className="mt-1 text-xs text-muted-foreground">
-                  Por enquanto, adicione manualmente para ter máximo controle.
+                  Revise cada arquivo antes de salvar e escolha a categoria certa.
                 </div>
               </div>
+              <Link
+                to="/importar"
+                className="rounded-full bg-ink px-4 py-2 text-xs font-medium text-background hover:opacity-90"
+              >
+                Abrir área de importação
+              </Link>
             </div>
             <div className="card-soft p-5">
               <div className="flex items-center gap-2 text-xs text-muted-foreground">

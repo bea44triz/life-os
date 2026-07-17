@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { CheckCircle2, Circle, Flame, Pencil, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Circle, Pencil, Plus, Trash2 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { PageBody, PageHeader, Section } from "@/components/ui-bits";
 import {
@@ -222,9 +222,6 @@ function Habitos() {
                             {doneToday ? "Concluído hoje" : "Pendência de hoje"}
                           </span>
                         </div>
-                      </div>
-                      <div className="flex items-center gap-1 rounded-full bg-clay-soft px-2.5 py-1 text-xs text-clay">
-                        <Flame className="h-3 w-3" /> 0
                       </div>
                     </header>
 

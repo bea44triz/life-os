@@ -34,10 +34,14 @@ function Config() {
               {s.items.map((it) => (
                 <button
                   key={it}
-                  className="grid w-full grid-cols-[minmax(0,1fr)_auto] items-center px-5 py-4 text-left text-sm transition hover:bg-secondary/50"
+                  type="button"
+                  disabled
+                  className="grid w-full cursor-not-allowed grid-cols-[minmax(0,1fr)_auto] items-center px-5 py-4 text-left text-sm opacity-60"
                 >
                   <span>{it}</span>
-                  <span className="text-muted-foreground">›</span>
+                  <span className="rounded-full bg-secondary px-2 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+                    Em breve
+                  </span>
                 </button>
               ))}
             </div>
