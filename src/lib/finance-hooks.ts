@@ -5,10 +5,12 @@ import {
   createCategory,
   createHabit,
   createJournalEntry,
+  createProject,
   createTransaction,
   createWellbeingLog,
   deleteHabit,
   deleteJournalEntry,
+  deleteProject,
   deleteTransaction,
   deleteWellbeingLog,
   listAccounts,
@@ -25,9 +27,11 @@ import {
   markHabitCompleted,
   undoHabitCompletion,
   updateHabit,
+  updateProject,
   updateTransaction,
   type HabitInput,
   type JournalEntryInput,
+  type ProjectInput,
   type TxInput,
   type WellbeingLogInput,
 } from "./finance-api";
@@ -92,6 +96,43 @@ export function useProjects() {
     queryKey: ["projects", user?.id],
     queryFn: () => listProjects(user!.id),
     enabled: !!user,
+  });
+}
+
+export function useCreateProject() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProjectInput) => createProject(user!.id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects", user?.id] });
+      qc.invalidateQueries({ queryKey: ["dashboard", user?.id] });
+    },
+  });
+}
+
+export function useUpdateProject() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, input }: { id: string; input: Partial<ProjectInput> }) =>
+      updateProject(user!.id, id, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects", user?.id] });
+      qc.invalidateQueries({ queryKey: ["dashboard", user?.id] });
+    },
+  });
+}
+
+export function useDeleteProject() {
+  const { user } = useAuth();
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => deleteProject(user!.id, id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["projects", user?.id] });
+      qc.invalidateQueries({ queryKey: ["dashboard", user?.id] });
+    },
   });
 }
 

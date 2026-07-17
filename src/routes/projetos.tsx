@@ -1,184 +1,349 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Plus } from "lucide-react";
-import { PageBody, PageHeader, brl } from "@/components/ui-bits";
-import { habits, insights } from "@/lib/mockData";
-import { InsightCard } from "@/components/InsightCard";
-import { useProjects } from "@/lib/finance-hooks";
+import { FolderKanban, Pencil, Plus, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { PageBody, PageHeader } from "@/components/ui-bits";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  useCreateProject,
+  useDeleteProject,
+  useProjects,
+  useUpdateProject,
+} from "@/lib/finance-hooks";
+import type { Project } from "@/lib/finance-api";
 
 export const Route = createFileRoute("/projetos")({
   head: () => ({
     meta: [
-      { title: "Projetos — Life OS" },
-      {
-        name: "description",
-        content: "Seus projetos de vida e como dinheiro, hábitos e humor estão impactando cada um.",
-      },
+      { title: "Projetos \u2014 Life OS" },
+      { name: "description", content: "Seus projetos de vida em um s\u00f3 lugar." },
     ],
   }),
   component: Projetos,
 });
 
-const toneBg = {
-  gold: "from-gold-soft to-surface",
-  sage: "from-sage-soft to-surface",
-  sky: "from-sky-soft to-surface",
-} as const;
+type ProjectForm = { name: string; type: string; status: string };
+const emptyForm: ProjectForm = { name: "", type: "", status: "" };
+
+function ProjectDialog({
+  open,
+  onOpenChange,
+  project,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  project: Project | null;
+}) {
+  const [form, setForm] = useState<ProjectForm>(emptyForm);
+  const createProject = useCreateProject();
+  const updateProject = useUpdateProject();
+  const isPending = createProject.isPending || updateProject.isPending;
+
+  useEffect(() => {
+    if (!open) return;
+    setForm(
+      project
+        ? { name: project.name, type: project.type ?? "", status: project.status ?? "" }
+        : emptyForm,
+    );
+  }, [open, project]);
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const name = form.name.trim();
+    if (!name) {
+      toast.error("Informe o nome do projeto.");
+      return;
+    }
+
+    const input = {
+      name,
+      type: form.type.trim() || null,
+      status: form.status.trim() || null,
+    };
+
+    try {
+      if (project) {
+        await updateProject.mutateAsync({ id: project.id, input });
+        toast.success("Projeto atualizado com sucesso.");
+      } else {
+        await createProject.mutateAsync(input);
+        toast.success("Projeto criado com sucesso.");
+      }
+      onOpenChange(false);
+    } catch (error) {
+      const fallback = project
+        ? "N\u00e3o foi poss\u00edvel atualizar o projeto."
+        : "N\u00e3o foi poss\u00edvel criar o projeto.";
+      toast.error(error instanceof Error ? error.message : fallback);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-serif text-2xl">
+            {project ? "Editar projeto" : "Novo projeto"}
+          </DialogTitle>
+          <p className="text-xs text-muted-foreground">
+            Use apenas os dados j&aacute; definidos para este projeto.
+          </p>
+        </DialogHeader>
+        <form onSubmit={submit} className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="project-name">Nome do projeto</Label>
+            <Input
+              id="project-name"
+              value={form.name}
+              onChange={(event) => setForm((value) => ({ ...value, name: event.target.value }))}
+              placeholder={"Ex: Organizar a mudan\u00e7a"}
+              autoFocus
+              required
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="project-type">Tipo ou categoria</Label>
+            <Input
+              id="project-type"
+              value={form.type}
+              onChange={(event) => setForm((value) => ({ ...value, type: event.target.value }))}
+              placeholder="Ex: Pessoal"
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="project-status">Status</Label>
+            <Input
+              id="project-status"
+              value={form.status}
+              onChange={(event) => setForm((value) => ({ ...value, status: event.target.value }))}
+              placeholder="Ex: Em andamento"
+            />
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
+              Cancelar
+            </Button>
+            <Button type="submit" disabled={isPending}>
+              {isPending
+                ? "Salvando..."
+                : project
+                  ? "Salvar altera\u00e7\u00f5es"
+                  : "Criar projeto"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ProjectCard({
+  project,
+  onEdit,
+  onDelete,
+}: {
+  project: Project;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <article className="card-soft p-5 sm:p-6">
+      <div className="flex items-start gap-4">
+        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-gold-soft text-gold">
+          <FolderKanban className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="font-serif text-2xl leading-tight">{project.name}</h2>
+          {(project.type || project.status) && (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {project.type && (
+                <span className="rounded-full bg-secondary px-2.5 py-1 text-xs text-muted-foreground">
+                  {project.type}
+                </span>
+              )}
+              {project.status && (
+                <span className="rounded-full bg-sage-soft px-2.5 py-1 text-xs text-sage">
+                  {project.status}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+      <div className="mt-6 flex flex-wrap gap-2 border-t border-border/50 pt-4">
+        <button
+          type="button"
+          onClick={onEdit}
+          className="inline-flex items-center gap-2 rounded-full bg-secondary px-3 py-2 text-xs font-medium text-foreground"
+        >
+          <Pencil className="h-3.5 w-3.5" /> Editar
+        </button>
+        <button
+          type="button"
+          onClick={onDelete}
+          className="inline-flex items-center gap-2 rounded-full bg-secondary px-3 py-2 text-xs font-medium text-foreground"
+        >
+          <Trash2 className="h-3.5 w-3.5" /> Excluir
+        </button>
+      </div>
+    </article>
+  );
+}
 
 function Projetos() {
-  const { data: liveProjects = [], isLoading } = useProjects();
-  const hasProjects = liveProjects.length > 0;
+  const projectsQuery = useProjects();
+  const deleteProject = useDeleteProject();
+  const projects = projectsQuery.data ?? [];
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [projectToDelete, setProjectToDelete] = useState<Project | null>(null);
+
+  function openCreate() {
+    setEditingProject(null);
+    setDialogOpen(true);
+  }
+
+  function openEdit(project: Project) {
+    setEditingProject(project);
+    setDialogOpen(true);
+  }
+
+  async function confirmDelete() {
+    if (!projectToDelete) return;
+    try {
+      await deleteProject.mutateAsync(projectToDelete.id);
+      toast.success("Projeto exclu\u00eddo com sucesso.");
+      setProjectToDelete(null);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "N\u00e3o foi poss\u00edvel excluir o projeto.",
+      );
+    }
+  }
 
   return (
     <>
       <PageHeader
         eyebrow="Projetos"
-        title="O que dá direção à sua vida."
-        subtitle="Cada projeto cruza um objetivo financeiro com um objetivo de comportamento."
+        title={"O que d\u00e1 dire\u00e7\u00e3o \u00e0 sua vida."}
+        subtitle="Organize seus projetos com os dados que realmente existem hoje."
         action={
           <button
-            disabled
-            className="hidden items-center gap-1.5 rounded-full bg-ink/70 px-4 py-2.5 text-xs font-medium text-background opacity-70 cursor-not-allowed sm:inline-flex"
+            type="button"
+            onClick={openCreate}
+            className="inline-flex items-center gap-1.5 rounded-full bg-ink px-4 py-2.5 text-xs font-medium text-background"
           >
             <Plus className="h-3.5 w-3.5" /> Novo projeto
           </button>
         }
       />
       <PageBody>
-        {isLoading ? (
+        {projectsQuery.isLoading ? (
           <div className="card-soft p-6 text-center text-sm text-muted-foreground">
             Carregando seus projetos...
           </div>
-        ) : !hasProjects ? (
+        ) : projectsQuery.isError ? (
           <div className="card-soft p-6 text-center">
-            <div className="text-xs uppercase tracking-[0.18em] text-muted-foreground">
+            <h2 className="font-serif text-2xl">
+              N&atilde;o foi poss&iacute;vel carregar seus projetos
+            </h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Verifique sua conex&atilde;o e tente novamente.
+            </p>
+            <button
+              type="button"
+              onClick={() => projectsQuery.refetch()}
+              className="mt-4 rounded-full bg-secondary px-4 py-2.5 text-xs font-medium text-foreground"
+            >
+              Tentar novamente
+            </button>
+          </div>
+        ) : projects.length === 0 ? (
+          <div className="card-soft p-6 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-gold-soft text-gold">
+              <FolderKanban className="h-5 w-5" />
+            </div>
+            <div className="mt-4 text-xs uppercase tracking-[0.18em] text-muted-foreground">
               Sem projetos ainda
             </div>
             <h2 className="mt-3 font-serif text-2xl">Nenhum projeto encontrado</h2>
             <p className="mt-2 text-sm text-muted-foreground">
-              Crie seu primeiro projeto assim que quiser conectar suas metas financeiras e de comportamento.
+              Crie seu primeiro projeto para come&ccedil;ar a organizar o que importa.
             </p>
-            <div className="mt-4">
-              <button
-                disabled
-                className="rounded-full bg-ink px-4 py-2.5 text-xs font-medium text-background opacity-70 cursor-not-allowed"
-              >
-                Novo projeto
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={openCreate}
+              className="mt-4 rounded-full bg-ink px-4 py-2.5 text-xs font-medium text-background"
+            >
+              Criar primeiro projeto
+            </button>
           </div>
         ) : (
-          <div className="grid gap-6">
-            {liveProjects.map((p) => {
-              const goalAmount = (p as any).goalAmount as number | undefined;
-              const savedAmount = (p as any).savedAmount as number | undefined;
-              const fin = goalAmount ? Math.round(((savedAmount ?? 0) / goalAmount) * 100) : null;
-              const beh = (p as any).behavioralProgress as number | undefined;
-              const deadline = (p as any).deadline as string | undefined;
-              const tone = (p as any).tone as keyof typeof toneBg | undefined;
-              const emoji = (p as any).emoji ?? "📌";
-              const description =
-                (p as any).description ??
-                (p.status ? `Status: ${p.status}` : p.type ? `Tipo: ${p.type}` : "Sem descrição disponível");
-              const deadlineLabel = deadline ?? (p.status ? `Status: ${p.status}` : p.type ? `Tipo: ${p.type}` : "Sem prazo");
-              const linkedHabits = habits.filter((h) => h.projectId === p.id);
-              const linkedInsights = insights.filter((i) => i.related.includes(p.id));
-
-              return (
-                <article
-                  key={p.id}
-                  className={`card-soft overflow-hidden bg-gradient-to-br ${tone ? toneBg[tone] : "from-surface to-surface"}`}
-                >
-                  <div className="grid gap-6 p-6 sm:p-8 lg:grid-cols-[1.4fr_1fr]">
-                    <div>
-                      <div className="flex items-start gap-4">
-                        <span className="text-4xl">{emoji}</span>
-                        <div className="min-w-0">
-                          <div className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground">
-                            {deadlineLabel}
-                          </div>
-                          <h3 className="mt-1 font-serif text-2xl leading-tight sm:text-3xl">
-                            {p.name}
-                          </h3>
-                          <p className="mt-2 max-w-xl text-sm text-muted-foreground">
-                            {description}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="mt-6 grid gap-5 sm:grid-cols-2">
-                        {fin !== null && (
-                          <div className="rounded-2xl bg-surface/80 p-4 backdrop-blur">
-                            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                              Financeiro
-                            </div>
-                            <div className="mt-2 font-serif text-2xl">
-                              {brl(savedAmount ?? 0)}
-                            </div>
-                            <div className="text-xs text-muted-foreground">
-                              de {brl(goalAmount ?? 0)}
-                            </div>
-                            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                              <div
-                                className="h-full rounded-full bg-gold"
-                                style={{ width: `${fin}%` }}
-                              />
-                            </div>
-                            <div className="mt-1 text-[11px] font-medium">{fin}%</div>
-                          </div>
-                        )}
-                        {beh !== null && typeof beh === "number" && (
-                          <div className="rounded-2xl bg-surface/80 p-4 backdrop-blur">
-                            <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                              Comportamento
-                            </div>
-                            <div className="mt-2 text-sm">{(p as any).behavioralGoal ?? "Meta comportamental não disponível"}</div>
-                            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-secondary">
-                              <div
-                                className="h-full rounded-full bg-sage"
-                                style={{ width: `${beh}%` }}
-                              />
-                            </div>
-                            <div className="mt-1 text-[11px] font-medium">{beh}%</div>
-                          </div>
-                        )}
-                      </div>
-
-                      {linkedHabits.length > 0 && (
-                        <div className="mt-5">
-                          <div className="text-xs uppercase tracking-wider text-muted-foreground">
-                            Hábitos vinculados
-                          </div>
-                          <div className="mt-2 flex flex-wrap gap-2">
-                            {linkedHabits.map((h) => (
-                              <span
-                                key={h.id}
-                                className="rounded-full bg-surface/80 px-3 py-1.5 text-xs"
-                              >
-                                {h.emoji} {h.name} · {h.weekDone}/7
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="space-y-3">
-                      {linkedInsights.length > 0 ? (
-                        linkedInsights.map((i) => <InsightCard key={i.id} insight={i} />)
-                      ) : (
-                        <div className="card-soft bg-surface/80 p-5 text-sm text-muted-foreground">
-                          Ainda não percebi padrões fortes aqui. Continue registrando — em alguns dias
-                          eu te mostro o que está se conectando.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </article>
-              );
-            })}
+          <div className="grid gap-4 md:grid-cols-2">
+            {projects.map((project) => (
+              <ProjectCard
+                key={project.id}
+                project={project}
+                onEdit={() => openEdit(project)}
+                onDelete={() => setProjectToDelete(project)}
+              />
+            ))}
           </div>
         )}
       </PageBody>
+      <ProjectDialog open={dialogOpen} onOpenChange={setDialogOpen} project={editingProject} />
+      <AlertDialog
+        open={projectToDelete !== null}
+        onOpenChange={(open) => {
+          if (!open && !deleteProject.isPending) setProjectToDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Excluir projeto?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {projectToDelete
+                ? 'O projeto "' +
+                  projectToDelete.name +
+                  '" ser\u00e1 exclu\u00eddo. Esta a\u00e7\u00e3o n\u00e3o pode ser desfeita.'
+                : "Esta a\u00e7\u00e3o n\u00e3o pode ser desfeita."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteProject.isPending}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(event) => {
+                event.preventDefault();
+                void confirmDelete();
+              }}
+              disabled={deleteProject.isPending}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleteProject.isPending ? "Excluindo..." : "Excluir projeto"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

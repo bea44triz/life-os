@@ -86,6 +86,12 @@ export type Project = {
   status: string | null;
 };
 
+export type ProjectInput = {
+  name: string;
+  type?: string | null;
+  status?: string | null;
+};
+
 export type Habit = {
   id: string;
   user_id: string;
@@ -543,4 +549,44 @@ export async function listProjects(userId: string): Promise<Project[]> {
     .order("name");
   if (error) throw error;
   return (data ?? []) as Project[];
+}
+
+export async function createProject(userId: string, input: ProjectInput): Promise<Project> {
+  const { data, error } = await supabase
+    .from("projects")
+    .insert({
+      user_id: userId,
+      name: input.name,
+      type: input.type ?? null,
+      status: input.status ?? null,
+    })
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Project;
+}
+
+export async function updateProject(
+  userId: string,
+  projectId: string,
+  input: Partial<ProjectInput>,
+): Promise<Project> {
+  const { data, error } = await supabase
+    .from("projects")
+    .update(input)
+    .eq("id", projectId)
+    .eq("user_id", userId)
+    .select("*")
+    .single();
+  if (error) throw error;
+  return data as Project;
+}
+
+export async function deleteProject(userId: string, projectId: string): Promise<void> {
+  const { error } = await supabase
+    .from("projects")
+    .delete()
+    .eq("id", projectId)
+    .eq("user_id", userId);
+  if (error) throw error;
 }
