@@ -552,17 +552,34 @@ export async function listProjects(userId: string): Promise<Project[]> {
 }
 
 export async function createProject(userId: string, input: ProjectInput): Promise<Project> {
+  const payload = {
+    user_id: userId,
+    name: input.name,
+    type: input.type ?? null,
+    status: input.status ?? null,
+  };
+
+  if (import.meta.env.DEV) {
+    console.debug("[projects] Creating project", payload);
+  }
+
   const { data, error } = await supabase
     .from("projects")
-    .insert({
-      user_id: userId,
-      name: input.name,
-      type: input.type ?? null,
-      status: input.status ?? null,
-    })
+    .insert(payload)
     .select("*")
     .single();
-  if (error) throw error;
+  if (error) {
+    console.error("[projects] Supabase createProject failed", {
+      payload,
+      error: {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+      },
+    });
+    throw new Error(error.message, { cause: error });
+  }
   return data as Project;
 }
 

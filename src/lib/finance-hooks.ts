@@ -103,7 +103,10 @@ export function useCreateProject() {
   const { user } = useAuth();
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: ProjectInput) => createProject(user!.id, input),
+    mutationFn: (input: ProjectInput) => {
+      if (!user) throw new Error("Sua sess\u00e3o expirou. Entre novamente para criar o projeto.");
+      return createProject(user.id, input);
+    },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["projects", user?.id] });
       qc.invalidateQueries({ queryKey: ["dashboard", user?.id] });
